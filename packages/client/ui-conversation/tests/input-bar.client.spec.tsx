@@ -297,9 +297,9 @@ describe('image draft rail', () => {
     expect(within.view.queryByRole('alert')).toBeNull()
   })
 
-  it('announces the format problem before any limit when the batch holds a non-image', () => {
-    const addImages = vi.fn(() => '仅支持 PNG、JPG、WebP、GIF 格式的图片')
-    const { view } = bench({
+  it('reads text/PDF files and prepends to draft instead of rejecting', async () => {
+    const addImages = vi.fn(() => 'error')
+    const { textarea } = bench({
       addImages,
       imageLimits: {
         maxImageBytes: 8,
@@ -309,14 +309,19 @@ describe('image draft rail', () => {
         mediaTypes: ['image/png'] as const,
       },
     })
-    // Oversized AND over-count AND wrong type: the format rejection wins.
     const files = [
-      new File([new ArrayBuffer(64)], 'a.pdf', { type: 'application/pdf' }),
-      new File([new ArrayBuffer(64)], 'b.pdf', { type: 'application/pdf' }),
+      new File(['hello world'], 'a.txt', { type: 'text/plain' }),
+      new File(['pdf content'], 'b.pdf', { type: 'application/pdf' }),
     ]
     fireEvent.drop(document.body, { dataTransfer: { types: ['Files'], files, dropEffect: 'none' } })
-    expect(addImages).toHaveBeenCalledWith(files)
-    expect(view.getByRole('alert').textContent).toContain('仅支持 PNG、JPG、WebP、GIF 格式的图片')
+    // Text/PDF files go through the text path, not addImages.
+    expect(addImages).not.toHaveBeenCalled()
+    // Wait for async file reads.
+    await new Promise((resolve) => { setTimeout(resolve, 50) })
+    expect(textarea.value).toContain('[File: a.txt]')
+    expect(textarea.value).toContain('hello world')
+    expect(textarea.value).toContain('[PDF: b.pdf]')
+    expect(textarea.value).toContain('pdf content')
   })
 
   it('shows the projected limits in the drop overlay desc line', () => {
@@ -386,29 +391,20 @@ describe('image draft rail', () => {
     expect(view.queryByRole('dialog', { name: '原图预览' })).toBeNull()
   })
 
-  it('announces an image-intake rejection as a fading toast, repeatable for the same reason', () => {
-    vi.useFakeTimers()
-    try {
-      const addImages = vi.fn(() => '仅支持 PNG、JPG、WebP、GIF 格式的图片')
-      const { view, textarea } = bench({ addImages })
-      const paste = () => {
-        fireEvent.paste(textarea, {
-          clipboardData: {
-            items: [{ kind: 'file', type: 'text/plain', getAsFile: () => new File(['x'], 'note.txt', { type: 'text/plain' }) }],
-            getData: () => '',
-          },
-        })
-      }
-      paste()
-      expect(view.getByRole('alert').textContent).toContain('仅支持 PNG、JPG、WebP、GIF 格式的图片')
-      act(() => { vi.advanceTimersByTime(4000) })
-      expect(view.queryByRole('alert')).toBeNull()
-      // The identical rejection re-announces: the toast is keyed per show.
-      paste()
-      expect(view.getByRole('alert').textContent).toContain('仅支持 PNG、JPG、WebP、GIF 格式的图片')
-    } finally {
-      vi.useRealTimers()
-    }
+  it('reads pasted text files and prepends to draft', async () => {
+    const addImages = vi.fn(() => 'error')
+    const { textarea } = bench({ addImages })
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [{ kind: 'file', type: 'text/plain', getAsFile: () => new File(['hello'], 'note.txt', { type: 'text/plain' }) }],
+        getData: () => '',
+      },
+    })
+    // Text file goes through the text path, not addImages.
+    expect(addImages).not.toHaveBeenCalled()
+    await new Promise((resolve) => { setTimeout(resolve, 50) })
+    expect(textarea.value).toContain('[File: note.txt]')
+    expect(textarea.value).toContain('hello')
   })
 
   it('announces a rejected drop through the same toast', () => {

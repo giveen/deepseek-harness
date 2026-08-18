@@ -438,31 +438,66 @@ export function InputBar({
   // back. The host enforces the same limits at submit for callers that bypass
   // this composer.
   const intakeImages = useCallback((files: readonly File[]): void => {
-    if (addImages === undefined || files.length === 0) return
-    const rejected = ((): string | null => {
-      if (imageLimits !== undefined) {
-        // Format precedes limits (DeepSeek Chat's filter order): a batch with
-        // a non-image must announce the format problem, not a count or size
-        // it could never pass anyway — addImages rejects it authoritatively.
-        if (files.some(file => !(imageLimits.mediaTypes as readonly string[]).includes(file.type))) {
-          return addImages(files)
+    if (files.length === 0) return
+
+    // Separate files into images and text/PDF files.
+    const imageTypes: Record<string, true> = Object.fromEntries(
+      (imageLimits?.mediaTypes ?? ['image/png', 'image/jpeg', 'image/webp', 'image/gif']).map(t => [t, true]),
+    )
+    const images: File[] = []
+    const textFiles: File[] = []
+    for (const file of files) {
+      if (imageTypes[file.type]) images.push(file)
+      else textFiles.push(file) // text/*, application/pdf, and unknown types: read as text
+    }
+
+    // Images: existing attachment flow.
+    if (images.length > 0 && addImages !== undefined) {
+      const rejected = ((): string | null => {
+        if (imageLimits !== undefined) {
+          if (attachments.length + images.length > imageLimits.maxImagesPerMessage) {
+            return t('image.tooMany', { count: imageLimits.maxImagesPerMessage })
+          }
+          if (images.some(file => file.size > imageLimits.maxImageBytes)) {
+            return t('image.fileTooLarge', { size: imageSizeText(imageLimits.maxImageBytes) })
+          }
+          const total = attachments.reduce((sum, attachment) => sum + attachment.file.size, 0)
+            + images.reduce((sum, file) => sum + file.size, 0)
+          if (total > imageLimits.maxMessageImageBytes) {
+            return t('image.totalTooLarge', { size: imageSizeText(imageLimits.maxMessageImageBytes) })
+          }
         }
-        if (attachments.length + files.length > imageLimits.maxImagesPerMessage) {
-          return t('image.tooMany', { count: imageLimits.maxImagesPerMessage })
+        return addImages(images)
+      })()
+      if (rejected !== null) showToast(rejected)
+    }
+
+    // Text/PDF files: read content and prepend to draft.
+    if (textFiles.length > 0 && keyboard !== undefined) {
+      void (async () => {
+        const parts: string[] = []
+        for (const file of textFiles) {
+          try {
+            const text = await file.text()
+            const label = file.name || 'untitled'
+            if (file.type === 'application/pdf') {
+              parts.push(`[PDF: ${label}]\n${text}\n[end PDF]`)
+            } else {
+              parts.push(`[File: ${label}]\n${text}\n[end file]`)
+            }
+          } catch {
+            showToast(`Failed to read ${file.name || 'file'}`)
+          }
         }
-        if (files.some(file => file.size > imageLimits.maxImageBytes)) {
-          return t('image.fileTooLarge', { size: imageSizeText(imageLimits.maxImageBytes) })
+        if (parts.length > 0) {
+          const prefix = parts.join('\n\n')
+          const current = input?.draft ?? ''
+          const separator = current.length > 0 ? '\n\n' : ''
+          keyboard.setDraft(`${prefix}${separator}${current}`)
         }
-        const total = attachments.reduce((sum, attachment) => sum + attachment.file.size, 0)
-          + files.reduce((sum, file) => sum + file.size, 0)
-        if (total > imageLimits.maxMessageImageBytes) {
-          return t('image.totalTooLarge', { size: imageSizeText(imageLimits.maxMessageImageBytes) })
-        }
-      }
-      return addImages(files)
-    })()
-    if (rejected !== null) showToast(rejected)
-  }, [addImages, attachments, imageLimits, showToast, t])
+      })()
+    }
+  }, [addImages, attachments, imageLimits, keyboard, input, showToast, t])
 
   // Whole-page file-drop intake (DeepSeek Chat behavior): the listeners live
   // on the document so a drop anywhere over the window adds images, not only
