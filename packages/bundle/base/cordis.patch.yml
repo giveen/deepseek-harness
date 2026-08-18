@@ -417,6 +417,16 @@
         fetch: false
         searchTimeoutMs: 60000
 
+    # Browser automation tools backed by the bundled camofox-browser server.
+    # The tool package owns the server process and waits for /health before
+    # publishing the tools; its loopback endpoint is fixed here so every mode
+    # uses the same connection and port.
+    - id: tool-camofox
+      name: '@deepseek-ai/dsh-tool-camofox'
+      config:
+        autoStart: true
+        serverUrl: 'http://127.0.0.1:9377'
+
     # ── rows every mode mounts, whose values each overlay may state ──────────────
 
     # The tool registry. Presentation mode is a deployment choice; omitting it here

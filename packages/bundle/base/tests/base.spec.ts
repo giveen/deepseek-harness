@@ -32,6 +32,14 @@ describe('dsh-base bundle', () => {
     )
     expect(rows.length).toBeGreaterThan(50)
     expect(rows.some(row => row.id === 'agent-loop')).toBe(true)
+    expect(rows.find(row => row.id === 'tool-camofox')).toMatchObject({
+      name: '@deepseek-ai/dsh-tool-camofox',
+      config: {
+        autoStart: true,
+        serverUrl: 'http://127.0.0.1:9377',
+      },
+    })
+    expect(manifest.dependencies).toHaveProperty('@deepseek-ai/dsh-tool-camofox')
     expect(rows.find(row => row.id === 'session-telemetry-otel')?.config?.['mode']).toEqual({
       __jsExpr: "process.env.DSH_TELEMETRY_MODE || 'DISABLED'",
     })

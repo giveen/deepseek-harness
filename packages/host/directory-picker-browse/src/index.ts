@@ -293,7 +293,7 @@ export default class BrowseDirectoryPicker extends DirectoryPicker {
       }
       entries.push(row)
     }
-    return { path: target, home, separator: sep as '\\' | '/', crumbs: ancestryCrumbs(target), entries, truncated }
+    return { path: target, home, separator: sep, crumbs: ancestryCrumbs(target), entries, truncated }
   }
 
   private async createDirectory(path: string, name: string): Promise<string> {

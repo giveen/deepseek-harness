@@ -133,7 +133,7 @@ async run( agent: Agent, pluginId: CordisDynamicPluginId, packageId: CordisDynam
  * @param resolution - Browser refusal or exact Client activation result.
  * @returns Whether the still-pending request accepted this resolution.
  */
-@Remote('resolveRequestRun') async resolveRequestRun( requestId: ApprovalRequestId, resolution: DynamicCordisRunResolution, ): Promise<DynamicCordisResolveAck>
+@Remote('resolveRequestRun') async resolveRequestRun(requestId: ApprovalRequestId, resolution: DynamicCordisRunResolution, ): Promise<DynamicCordisResolveAck>
 
 /**
  * Settle a direct panel run after this page loaded or failed its Client half.
@@ -254,7 +254,7 @@ inspectPackage( agent: Agent, pluginId: CordisDynamicPluginId, packageId: Cordis
 
 Types: [Agent](core.md)
 
-Source: [`packages/extensions/cordis-host-runner/src/index.ts:124`](../../packages/extensions/cordis-host-runner/src/index.ts)
+Source: [`packages/extensions/cordis-host-runner/src/index.ts:135`](../../packages/extensions/cordis-host-runner/src/index.ts)
 
 <a id="cordis-events"></a>
 

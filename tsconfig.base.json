@@ -12,6 +12,8 @@
     "composite": true,
     "incremental": true,
     "skipLibCheck": true,
+    "noUncheckedSideEffectImports": true,
+    "libReplacement": false,
     "esModuleInterop": true,
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true,
@@ -156,6 +158,7 @@
       // here. The aggregates' project references (tsconfig.host.json /
       // tsconfig.client.json) stay explicit — TS project references have no
       // wildcard form.
+      "@deepseek-ai/dsh-tool-camofox": ["./packages/web/camofox/src"],
       "@deepseek-ai/dsh-host-apiproxy": ["./packages/host/apiproxy/src"],
       "@deepseek-ai/dsh-host-directory-picker": ["./packages/host/directory-picker/src"],
       "@deepseek-ai/dsh-host-directory-picker/*": ["./packages/host/directory-picker/src/*"],

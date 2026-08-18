@@ -23,7 +23,11 @@ import type {
 } from './registry.ts'
 import { createSandbox, evaluateHostCode, precheckCode } from './sandbox.ts'
 import type {
-  ApprovalRequestId, CordisDynamicPackageId, CordisDynamicPluginId, CordisDynamicPluginRunId, CordisErrorDetails,
+  ApprovalRequestId,
+  CordisDynamicPackageId,
+  CordisDynamicPluginId,
+  CordisDynamicPluginRunId,
+  CordisErrorDetails,
   CordisDynamicRunMode, CordisInspectProviderManifest, CordisInspectQueryResolution,
   CordisInspectRequestId, CordisInspectResolveAck, DynamicCordisClientSource, DynamicCordisHostHalfResult,
   DynamicCordisInventoryRow, DynamicCordisInvokeResult, DynamicCordisRenderFailure, DynamicCordisResolveAck,
@@ -46,7 +50,7 @@ export { HOST_BUILTIN_INSPECTION } from './sandbox.ts'
  * @param id - opaque identifier minted by the Host registry.
  * @returns the branded Plugin identifier.
  */
-export function CordisDynamicPluginId(id: string): CordisDynamicPluginId {
+function makeCordisDynamicPluginId(id: string): CordisDynamicPluginId {
   return id as CordisDynamicPluginId
 }
 
@@ -55,7 +59,7 @@ export function CordisDynamicPluginId(id: string): CordisDynamicPluginId {
  * @param id - opaque identifier minted by the Host registry.
  * @returns the branded Package identifier.
  */
-export function CordisDynamicPackageId(id: string): CordisDynamicPackageId {
+function makeCordisDynamicPackageId(id: string): CordisDynamicPackageId {
   return id as CordisDynamicPackageId
 }
 
@@ -64,7 +68,7 @@ export function CordisDynamicPackageId(id: string): CordisDynamicPackageId {
  * @param id - opaque identifier minted by the Host registry.
  * @returns the branded Plugin Run identifier.
  */
-export function CordisDynamicPluginRunId(id: string): CordisDynamicPluginRunId {
+function makeCordisDynamicPluginRunId(id: string): CordisDynamicPluginRunId {
   return id as CordisDynamicPluginRunId
 }
 
@@ -73,8 +77,15 @@ export function CordisDynamicPluginRunId(id: string): CordisDynamicPluginRunId {
  * @param id - opaque identifier minted by the Host registry.
  * @returns the branded approval request identifier.
  */
-export function ApprovalRequestId(id: string): ApprovalRequestId {
+function makeApprovalRequestId(id: string): ApprovalRequestId {
   return id as ApprovalRequestId
+}
+
+export {
+  makeApprovalRequestId as ApprovalRequestId,
+  makeCordisDynamicPackageId as CordisDynamicPackageId,
+  makeCordisDynamicPluginId as CordisDynamicPluginId,
+  makeCordisDynamicPluginRunId as CordisDynamicPluginRunId,
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -165,7 +176,7 @@ export class DynamicCordisRunnerService extends TypertRemoteService {
       if (!/^[a-z]{3,6}$/.test(prefix)) {
         throw new Error('cordis_define `plugin.idPrefix` must contain 3–6 lowercase English letters')
       }
-      const pluginId = CordisDynamicPluginId(this.registry.mintPluginId(prefix))
+      const pluginId = makeCordisDynamicPluginId(this.registry.mintPluginId(prefix))
       plugin = {
         pluginId,
         sessionId: request.sessionId,
@@ -182,7 +193,7 @@ export class DynamicCordisRunnerService extends TypertRemoteService {
       plugin = found
     }
 
-    const packageId = CordisDynamicPackageId(this.registry.mintPackageId())
+    const packageId = makeCordisDynamicPackageId(this.registry.mintPackageId())
     const definition: DynamicCordisDefinition = {
       packageId,
       name,
@@ -274,7 +285,7 @@ export class DynamicCordisRunnerService extends TypertRemoteService {
       return { ...started, reason: 'host-half-failed' }
     }
 
-    const requestId = ApprovalRequestId(this.registry.mintApprovalRequestId())
+    const requestId = makeApprovalRequestId(this.registry.mintApprovalRequestId())
     const requiresApproval = !plan.plugin.clientVersionUpdatesApproved
       && !plan.plugin.approvedClientPackages.has(packageId)
     attempt.approvalRequestId = requestId
@@ -410,8 +421,7 @@ export class DynamicCordisRunnerService extends TypertRemoteService {
    * @returns Whether the still-pending request accepted this resolution.
    */
   @Remote('resolveRequestRun')
-  async resolveRequestRun(
-    requestId: ApprovalRequestId,
+  async resolveRequestRun(requestId: ApprovalRequestId,
     resolution: DynamicCordisRunResolution,
   ): Promise<DynamicCordisResolveAck> {
     const pending = this.registry.peekRequest(requestId)
@@ -1007,8 +1017,7 @@ export class DynamicCordisRunnerService extends TypertRemoteService {
     }
   }
 
-  private announceResolved(
-    requestId: ApprovalRequestId,
+  private announceResolved(requestId: ApprovalRequestId,
     resolution: DynamicCordisRunResolution,
     override?: RequestRunOutcome,
   ): void {
@@ -1173,7 +1182,7 @@ export class DynamicCordisRunnerService extends TypertRemoteService {
 
   private createAttempt(plan: ActivationPlan): DynamicCordisRunAttempt {
     return {
-      pluginRunId: CordisDynamicPluginRunId(this.registry.mintPluginRunId()),
+      pluginRunId: makeCordisDynamicPluginRunId(this.registry.mintPluginRunId()),
       packageId: plan.definition.packageId,
       mode: plan.mode,
       status: 'starting-host',

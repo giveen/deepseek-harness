@@ -30,7 +30,7 @@ overrides:
 
 peerDependencyRules:
   allowedVersions:
-    typescript: '>=5 <7'
+    typescript: '>=5 <8'
 
 # pnpm 10+ blocks any dependency shipping an install/build script until it is
 # explicitly reviewed here (strictDepBuilds defaults to true: an unlisted script
@@ -40,6 +40,8 @@ peerDependencyRules:
 allowBuilds:
   esbuild: true
   lefthook: true
+  # The unified browser capability fetches its Camoufox binary during install.
+  '@askjo/camofox-browser': true
   # Cross-platform boundary for the persistent PTY backend, including ConPTY on Windows.
   node-pty: true
   # Pulled in by @earendil-works/pi-ai (optional LLM API backend). pnpm lists
