@@ -329,6 +329,7 @@ describe('host domain schemas', () => {
     const listing = hostListDirectoryValueSchema.parse({
       path: '/home/u/p',
       home: '/home/u',
+      separator: '/',
       crumbs: [{ name: '/', path: '/', hidden: false }, { name: 'p', path: '/home/u/p', hidden: false }],
       entries: [{ name: '.dot', path: '/home/u/p/.dot', hidden: true }],
       truncated: false,

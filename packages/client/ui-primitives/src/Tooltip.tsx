@@ -1,7 +1,6 @@
 // Hover/focus label bubble (figma tooltip pill: dark plate, white text).
-// TODO: interaction is a placeholder (horizontal overflow clamps and a
-// vertical collision flips the bubble to the other side, but there is no
-// arrow) — visuals and behavior get a proper pass later.
+// Horizontal overflow clamps, vertical collision flips the bubble to the
+// opposite side, and a CSS arrow points toward the anchor.
 // The anchor is the child element itself (cloneElement, no wrapper node), so
 // attaching a tooltip never changes the anchor's layout context. The bubble is
 // position:fixed and coordinates come from the anchor's rect at show time, so
@@ -83,6 +82,16 @@ export function Tooltip({ label, side = 'right', delayMs = 0, disabled = false, 
       if (r.right > window.innerWidth - EDGE_MARGIN) dx = window.innerWidth - EDGE_MARGIN - r.right
       if (r.left + dx < EDGE_MARGIN) dx = EDGE_MARGIN - r.left
       el.style.left = `${pos.x + dx}px`
+      // Arrow offset: center the arrow on the anchor's nearest edge.
+      // For 'right': vertical offset from bubble top to anchor center.
+      // For 'bottom'/'top': horizontal offset from bubble left to anchor center.
+      const anchorCenterY = (pos.top + pos.bottom) / 2
+      const anchorCenterX = pos.x + (anchor.current?.getBoundingClientRect().width ?? 0) / 2
+      if (placement === 'right') {
+        el.style.setProperty('--arrow-offset', `${anchorCenterY - r.top}px`)
+      } else {
+        el.style.setProperty('--arrow-offset', `${anchorCenterX - r.left}px`)
+      }
       if (side === 'right') return
       // Flip only into a side that genuinely fits, so an anchor with room on
       // neither side keeps the requested placement instead of oscillating.

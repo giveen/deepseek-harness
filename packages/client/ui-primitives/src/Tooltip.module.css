@@ -1,9 +1,11 @@
-/* Visual spec mirrors deepsuite @deepseek/ui Tooltip.css (size m, no arrow),
+/* Visual spec mirrors deepsuite @deepseek/ui Tooltip.css (size m),
    except padding tightened 6/12 -> 3/7, type 14/22 -> 13/20, radius
    10 -> 8, a tooltip-bg plate,
    one text color across both themes (the plate stays dark in light and dark
    mode). Behavior (fixed positioning off the anchor rect) is local — the
-   upstream Floating stack is intentionally not vendored. */
+   upstream Floating stack is intentionally not vendored.
+   Arrow is a CSS triangle via `::after`, positioned per `data-side` and
+   centered on the anchor's nearest edge via `--arrow-offset`. */
 
 .bubble {
   position: fixed;
@@ -36,6 +38,41 @@
 
 .bubble[data-side='top'] {
   transform: translate(-50%, -100%);
+}
+
+/* Arrow: CSS triangle via border trick, positioned per side. The arrow
+   points toward the anchor. `data-arrow` is the CSS `left` / `top` offset
+   (set by the component to center the arrow on the anchor's nearest edge). */
+.bubble::after {
+  content: '';
+  position: absolute;
+  width: 0;
+  height: 0;
+  border: 5px solid transparent;
+}
+
+/* Right: arrow on the left edge, pointing left. */
+.bubble[data-side='right']::after {
+  right: 100%;
+  top: var(--arrow-offset, 50%);
+  transform: translateY(-50%);
+  border-right-color: var(--dsw-alias-tooltip-bg);
+}
+
+/* Bottom: arrow on the top edge, pointing up. */
+.bubble[data-side='bottom']::after {
+  bottom: 100%;
+  left: var(--arrow-offset, 50%);
+  transform: translateX(-50%);
+  border-bottom-color: var(--dsw-alias-tooltip-bg);
+}
+
+/* Top: arrow on the bottom edge, pointing down. */
+.bubble[data-side='top']::after {
+  top: 100%;
+  left: var(--arrow-offset, 50%);
+  transform: translateX(-50%);
+  border-top-color: var(--dsw-alias-tooltip-bg);
 }
 
 @keyframes tooltip-in {

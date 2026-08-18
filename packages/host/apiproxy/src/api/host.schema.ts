@@ -44,6 +44,7 @@ export const hostListDirectoryRequestSchema = z.object({
 export const hostListDirectoryValueSchema = z.object({
   path: z.string(),
   home: z.string(),
+  separator: z.enum(['\\', '/']),
   crumbs: z.array(directoryEntrySchema),
   entries: z.array(directoryEntrySchema),
   truncated: z.boolean(),

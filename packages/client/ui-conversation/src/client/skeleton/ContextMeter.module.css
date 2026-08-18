@@ -32,9 +32,17 @@
 
 .fill {
   fill: none;
-  stroke: var(--dsw-alias-label-tertiary);
+  stroke: var(--dsw-static-green-400);
   stroke-width: 2;
   stroke-linecap: round;
+}
+
+.fillWarn {
+  stroke: var(--dsw-static-amber-400);
+}
+
+.fillCritical {
+  stroke: var(--dsw-static-red-400);
 }
 
 .panel {

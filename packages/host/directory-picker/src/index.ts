@@ -40,6 +40,8 @@ export interface DirectoryListing {
   path: string
   /** The host account's home directory (breadcrumb "Home" rooting). */
   home: string
+  /** Platform path separator: `'\\'` on Windows, `'/'` elsewhere. */
+  separator: '\\' | '/'
   /**
    * Ancestor chain from the filesystem root to the listed directory
    * inclusive; every crumb is a jump target (crumb `hidden` is always false).

@@ -72,6 +72,7 @@ export function ContextMeter({ useProjection, t }: ContextMeterProps) {
   if (context === null) return null
   const percent = context.percent
   const reading = `${percent}%`
+  const fillClass = percent >= 80 ? css.fillCritical : percent >= 50 ? css.fillWarn : css.fill
   const [headBefore = '', headAfter = ''] = t('context.aria', { percent: READING_SLOT })
     .split(READING_SLOT)
     .map(part => part.trim())
@@ -102,7 +103,7 @@ export function ContextMeter({ useProjection, t }: ContextMeterProps) {
           <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden>
             <circle className={css.track} cx="7" cy="7" r={RADIUS} />
             <circle
-              className={css.fill}
+              className={fillClass}
               cx="7"
               cy="7"
               r={RADIUS}
