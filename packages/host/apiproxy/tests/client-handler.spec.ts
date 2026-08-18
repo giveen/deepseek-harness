@@ -75,7 +75,7 @@ function scriptedApi(overrides: {
         version: '0-test', cwd: '/t', attachedSessions: 0, canOpenPath: true,
       }),
       pickDirectory: r => ok(r, { path: null }),
-      listDirectory: r => ok(r, { path: '/t', home: '/t', crumbs: [], entries: [], truncated: false }),
+      listDirectory: r => ok(r, { path: '/t', home: '/t', separator: '/', crumbs: [], entries: [], truncated: false }),
       createDirectory: r => ok(r, { path: '/t/new' }),
       openPath: r => ok(r, { opened: true as const }),
       ...overrides.host,

@@ -127,6 +127,7 @@ export class TestWorkspaces implements IWorkspaces {
     return {
       path: '/home/test',
       home: '/home/test',
+      separator: '/',
       crumbs: [
         { name: '/', path: '/', hidden: false },
         { name: 'home', path: '/home', hidden: false },
