@@ -20,7 +20,7 @@ import type { WorkspaceBrowserInjected, WorkspacePickerInjected } from './contra
 import { createWorkspaceViewStore } from './stores.ts'
 import { WorkspaceBrowser } from './WorkspaceBrowser.tsx'
 import { WorkspacePicker } from './WorkspacePicker.tsx'
-import { WorkspaceCommitsView, WorkspaceFilesView } from './WorkspaceViews.tsx'
+import { WorkspaceCodebaseView, WorkspaceCommitsView, WorkspaceFilesView } from './WorkspaceViews.tsx'
 import { en, zh, type WorkspaceKey } from './locales.ts'
 
 export type {
@@ -180,5 +180,13 @@ export function apply(ctx: ClientContext): void {
       inject: commitsInjected,
       label: () => ctx.locale.bind(NS)('viewer.commits.tab'),
     }, WorkspaceCommitsView)
+    yield ctx.slots.register({
+      name: 'conversation.view',
+      id: 'workspace-codebase',
+      order: 40,
+      locale: NS,
+      inject: () => ({}),
+      label: () => ctx.locale.bind(NS)('viewer.codebase.tab'),
+    }, WorkspaceCodebaseView)
   })
 }

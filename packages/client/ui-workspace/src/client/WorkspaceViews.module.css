@@ -32,6 +32,14 @@
   padding: 8px 12px 24px;
 }
 
+.embed {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #0b1920;
+}
+
 .fileRow {
   min-width: 0;
 }

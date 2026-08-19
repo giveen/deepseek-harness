@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { SessionId, WorkspaceId, WorkspaceListState, WorkspaceView } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConvViewProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { WorkspaceCommitsView, WorkspaceFilesView } from '../src/client/WorkspaceViews.tsx'
+import { WorkspaceCodebaseView, WorkspaceCommitsView, WorkspaceFilesView } from '../src/client/WorkspaceViews.tsx'
 import type { WorkspaceKey } from '../src/client/locales.ts'
 
 afterEach(cleanup)
@@ -44,6 +44,9 @@ const t = ((key: WorkspaceKey, values?: Record<string, string | number>) => {
   const copy: Record<string, string> = {
     'viewer.files.title': 'Workspace files',
     'viewer.commits.title': 'Commit history',
+    'viewer.codebase.title': 'Codebase Memory',
+    'viewer.codebase.description': 'Structural code graph',
+    'viewer.codebase.frameTitle': 'Codebase Memory graph interface',
     'viewer.noWorkspace': 'This session has no workspace',
     'viewer.loading': 'Loading…',
     'viewer.failed': 'Load failed: {message}',
@@ -76,6 +79,14 @@ function viewProps<T extends Record<string, unknown>>(extra: T): TestViewProps &
 }
 
 describe('Workspace conversation views', () => {
+  it('embeds the same-origin codebase-memory graph panel', () => {
+    render(<WorkspaceCodebaseView t={t} />)
+    const frame = document.querySelector('iframe')
+    expect(frame?.title).toBe('Codebase Memory graph interface')
+    expect(frame?.getAttribute('src')).toBe('/codebase-memory/')
+    expect(frame?.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin')
+  })
+
   it('expands directories and opens files through the Host action', async () => {
     const openPath = vi.fn()
     const loadFiles = vi.fn(async () => ({

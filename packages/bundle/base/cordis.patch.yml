@@ -417,6 +417,14 @@
         fetch: false
         searchTimeoutMs: 60000
 
+    # Local structural code intelligence backed by codebase-memory-mcp.
+    # Its package postinstall owns the verified native runtime; this row only
+    # launches the MCP bridge and keeps the graph UI on its fixed loopback port.
+    - id: codebase-memory
+      name: '@deepseek-ai/dsh-codebase-memory'
+      config:
+        ui: true
+
     # Browser automation tools backed by the bundled camofox-browser server.
     # The tool package owns the server process and waits for /health before
     # publishing the tools; its loopback endpoint is fixed here so every mode

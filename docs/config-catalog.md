@@ -465,6 +465,28 @@ export interface Config {
 
 Source: [`packages/code-runtime/code-runtime-worker-thread/src/index.ts:25`](../packages/code-runtime/code-runtime-worker-thread/src/index.ts)
 
+<a id="deepseek-aidsh-codebase-memory"></a>
+
+## `@deepseek-ai/dsh-codebase-memory`
+
+Requires: `tools` · `systemPrompt`
+
+```ts config-catalog
+/** Plugin configuration. */
+export interface Config {
+  /** Project directory sent as the native MCP server's working directory. */
+  cwd?: string
+  /** Start the graph UI alongside the MCP server. */
+  ui?: boolean
+  /** Per-tool-call timeout for discovered MCP tools. */
+  toolCallTimeoutMs?: number
+  /** Additional environment passed to the native runtime. */
+  env?: Record<string, string>
+}
+```
+
+Source: [`packages/mcp/codebase-memory/src/index.ts:28`](../packages/mcp/codebase-memory/src/index.ts)
+
 <a id="deepseek-aidsh-compaction-basic"></a>
 
 ## `@deepseek-ai/dsh-compaction-basic`
@@ -2944,7 +2966,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/bundle/web-app/src/index.ts:44`](../packages/bundle/web-app/src/index.ts)
+Source: [`packages/bundle/web-app/src/index.ts:45`](../packages/bundle/web-app/src/index.ts)
 
 <a id="deepseek-aidsh-web-fetch-http"></a>
 

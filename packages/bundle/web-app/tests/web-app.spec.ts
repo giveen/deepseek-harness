@@ -55,6 +55,7 @@ function fakeHttpServer(host: '127.0.0.1' | '0.0.0.0' = '127.0.0.1'): { server: 
   const server = {
     host,
     port: 4567,
+    register: () => () => {},
     registerFallback: (handler: unknown) => {
       fallback = handler
       return () => { fallback = undefined }
@@ -78,6 +79,11 @@ interface BashContribution {
 describe('web-app runtime glue', () => {
   it('resolves the declared browser opener from the bundle package context', () => {
     expect(existsSync(internals.browserOpenerModulePath)).toBe(true)
+  })
+
+  it('keeps graph UI absolute API and asset paths inside the same-origin proxy', () => {
+    expect(internals.rewriteCodebaseMemoryUiText('fetch("/rpc"); fetch("/api/layout"); import("/assets/app.js")'))
+      .toBe('fetch("/codebase-memory/rpc"); fetch("/codebase-memory/api/layout"); import("/codebase-memory/assets/app.js")')
   })
 
   it('mounts dist serving, prompt section, bash variables, and prints the URL with the LAN snapshot', async () => {

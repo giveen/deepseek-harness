@@ -518,6 +518,18 @@
   line-height: 18px;
 }
 
+.modelCapability {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  cursor: pointer;
+}
+
+.modelCapability input {
+  accent-color: var(--dsw-alias-brand-primary);
+}
+
 .modelEmpty {
   padding: 12px;
   border: 1px dashed var(--dsw-alias-border-l3);

@@ -1,4 +1,4 @@
-/** Conversation view entries for the Workspace file tree and Git history. */
+/** Conversation view entries for the Workspace file tree, Git history, and code graph. */
 
 import { useEffect, useMemo, useState } from 'react'
 import clsx from 'clsx'
@@ -158,6 +158,26 @@ export function WorkspaceFilesView({
       </div>
       {truncated && <div className={css.notice}>{t('viewer.files.truncated')}</div>}
       {directories.size > 0 && <span className={css.srOnly}>{t('viewer.files.expandHint')}</span>}
+    </section>
+  )
+}
+
+/** Embedded codebase-memory graph UI shown in the conversation tab ring. */
+export function WorkspaceCodebaseView({ t }: PropsLocale<'workspace'>) {
+  return (
+    <section className={css.root} aria-label={t('viewer.codebase.title')}>
+      <header className={css.toolbar}>
+        <strong>{t('viewer.codebase.title')}</strong>
+        <span className={css.count}>{t('viewer.codebase.description')}</span>
+      </header>
+      <iframe
+        className={css.embed}
+        title={t('viewer.codebase.frameTitle')}
+        src="/codebase-memory/"
+        loading="lazy"
+        referrerPolicy="same-origin"
+        sandbox="allow-scripts allow-same-origin"
+      />
     </section>
   )
 }

@@ -10,6 +10,7 @@
  * @module @deepseek-ai/dsh-web-app
  */
 
+import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { networkInterfaces } from 'node:os'
@@ -86,6 +87,75 @@ const DSH_WEB_URL = 'DSH_WEB_URL' as const
 const LOOPBACK_HOST = '127.0.0.1'
 /** The webserver schema's all-interfaces bind literal. */
 const ALL_INTERFACES_HOST = '0.0.0.0'
+
+/** Fixed loopback endpoint exposed by the built-in codebase-memory graph UI. */
+const CODEBASE_MEMORY_UI_PORT = 9749
+/** Harness-local prefix used to proxy the upstream graph UI without a second bind. */
+const CODEBASE_MEMORY_UI_PREFIX = '/codebase-memory'
+
+/** Rewrite absolute upstream UI URLs so its iframe stays inside the harness route. */
+function rewriteCodebaseMemoryUiText(text: string): string {
+  return text.replace(/(["'`(])\/(api|rpc|assets)(?=\/|["'`)])/g, '$1/codebase-memory/$2')
+}
+
+/** Proxy the upstream graph UI and its API while keeping the native server loopback-only. */
+function proxyCodebaseMemoryUi(req: IncomingMessage, res: ServerResponse): void {
+  let requestUrl: URL
+  try {
+    requestUrl = new URL(req.url ?? '/', 'http://dsh')
+  } catch {
+    res.writeHead(400)
+    res.end('invalid codebase-memory URL')
+    return
+  }
+  const suffix = requestUrl.pathname.slice(CODEBASE_MEMORY_UI_PREFIX.length) || '/'
+  const targetPath = `${suffix}${requestUrl.search}`
+  const upstream = httpRequest({
+    hostname: '127.0.0.1',
+    port: CODEBASE_MEMORY_UI_PORT,
+    path: targetPath,
+    method: req.method,
+    headers: {
+      ...req.headers,
+      host: `127.0.0.1:${String(CODEBASE_MEMORY_UI_PORT)}`,
+      origin: `http://127.0.0.1:${String(CODEBASE_MEMORY_UI_PORT)}`,
+      'accept-encoding': 'identity',
+    },
+  }, (response) => {
+    const contentType = response.headers['content-type'] ?? ''
+    const rewrite = /(?:text\/html|javascript|text\/css)/i.test(contentType)
+    if (!rewrite || req.method === 'HEAD') {
+      res.writeHead(response.statusCode ?? 502, response.headers)
+      response.pipe(res)
+      return
+    }
+    const chunks: string[] = []
+    response.setEncoding('utf8')
+    response.on('data', (chunk: string) => { chunks.push(chunk) })
+    response.on('end', () => {
+      const body = Buffer.from(rewriteCodebaseMemoryUiText(chunks.join('')))
+      const headers = { ...response.headers }
+      delete headers['content-length']
+      delete headers.etag
+      headers['content-length'] = String(body.byteLength)
+      res.writeHead(response.statusCode ?? 502, headers)
+      res.end(body)
+    })
+    response.on('error', (error) => {
+      if (!res.headersSent) res.writeHead(502)
+      res.end(String(error))
+    })
+  })
+  upstream.on('error', (error) => {
+    if (res.headersSent) {
+      res.destroy(error)
+      return
+    }
+    res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+    res.end(`codebase-memory UI unavailable: ${String(error)}`)
+  })
+  req.pipe(upstream)
+}
 
 /** Whether this process was launched through SSH, including a forwarded-port session. */
 function launchedThroughSsh(ctx: Context): boolean {
@@ -269,7 +339,13 @@ export const internals: {
   resolveDistIndex: () => string
   openBrowser: (url: string) => Promise<void>
   browserOpenerModulePath: string
-} = { resolveDistIndex, openBrowser, browserOpenerModulePath: OPEN_MODULE_PATH }
+  rewriteCodebaseMemoryUiText: (text: string) => string
+} = {
+  resolveDistIndex,
+  openBrowser,
+  browserOpenerModulePath: OPEN_MODULE_PATH,
+  rewriteCodebaseMemoryUiText,
+}
 
 /**
  * Mount the Web runtime: dist serving, surface prompt, the bash runtime
@@ -288,6 +364,14 @@ export function apply(ctx: Context, config: Config): void {
   const releaseRuntime = ctx.root.provide(WEB_RUNTIME_SERVICE, runtime)
   ctx.effect(() => releaseRuntime, 'web-runtime: shared bind snapshot')
   ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
+  // The native graph UI stays loopback-only; this same-origin prefix makes it
+  // available to the Web client, including LAN clients, without exposing a
+  // second unauthenticated listener. Text assets are rewritten because the
+  // upstream bundle uses absolute /api, /rpc, and /assets URLs.
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'prefix', path: CODEBASE_MEMORY_UI_PREFIX, handler: proxyCodebaseMemoryUi }),
+    'web-runtime: codebase-memory UI proxy',
+  )
   if (config.surfaceContext) {
     ctx.inject(['systemPrompt'], (promptCtx) => {
       addHarnessSourceSection(promptCtx, SOURCE_ROOT)

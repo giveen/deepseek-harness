@@ -210,7 +210,7 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
     })
   }
 
-  const patch = (index: number, next: Record<string, string | number | undefined>): void => {
+  const patch = (index: number, next: Record<string, unknown>): void => {
     onChange(models.map((model, at) => {
       if (at !== index) return model
       // Rebuilt rather than spread over: an emptied optional field has to leave
@@ -280,6 +280,12 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
     }
     onChange([...byId.values()])
     closePicker()
+  }
+
+  /** Whether the materialized row explicitly accepts image input. */
+  const imageInputEnabled = (model: ModelDraft): boolean => {
+    const input = model['input']
+    return Array.isArray(input) && input.includes('image')
   }
 
   const toggle = (id: string): void => {
@@ -416,6 +422,18 @@ export function ModelListEditor(props: ModelListEditorProps): ReactNode {
                     disabled={disabled}
                     onChange={(event) => { editCapacity(index, 'maxTokens', event.target.value) }}
                   />
+                </label>
+                <label className={styles['modelCapability']}>
+                  <input
+                    type="checkbox"
+                    checked={imageInputEnabled(model)}
+                    aria-label={`${t('modelImageInput')} ${index + 1}`}
+                    disabled={disabled}
+                    onChange={(event) => {
+                      patch(index, { input: event.target.checked ? ['text', 'image'] : ['text'] })
+                    }}
+                  />
+                  <span className={styles['modelFieldLabel']}>{t('modelImageInput')}</span>
                 </label>
               </div>
             )

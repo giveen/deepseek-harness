@@ -70,6 +70,7 @@ export const zh = {
   'time.ago': '{t}前',
   'viewer.files.tab': '文件',
   'viewer.commits.tab': '提交',
+  'viewer.codebase.tab': '代码图',
   'viewer.files.title': '工作区文件',
   'viewer.commits.title': '提交历史',
   'viewer.noWorkspace': '当前会话没有工作区',
@@ -82,6 +83,9 @@ export const zh = {
   'viewer.commits.count': '{n} 个提交',
   'viewer.commits.empty': '没有提交历史',
   'viewer.commits.loadOlder': '加载更早的提交',
+  'viewer.codebase.title': 'Codebase Memory',
+  'viewer.codebase.description': '结构化代码关系图',
+  'viewer.codebase.frameTitle': 'Codebase Memory 图形界面',
 } satisfies Record<string, string>
 
 /** The workspace namespace key union. */
@@ -153,6 +157,7 @@ export const en = {
   'time.ago': '{t} ago',
   'viewer.files.tab': 'Files',
   'viewer.commits.tab': 'Commits',
+  'viewer.codebase.tab': 'Codebase',
   'viewer.files.title': 'Workspace files',
   'viewer.commits.title': 'Commit history',
   'viewer.noWorkspace': 'This session has no workspace',
@@ -165,4 +170,7 @@ export const en = {
   'viewer.commits.count': '{n} commits',
   'viewer.commits.empty': 'No commit history',
   'viewer.commits.loadOlder': 'Load older commits',
+  'viewer.codebase.title': 'Codebase Memory',
+  'viewer.codebase.description': 'Structural code graph',
+  'viewer.codebase.frameTitle': 'Codebase Memory graph interface',
 } satisfies Record<WorkspaceKey, string>

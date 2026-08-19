@@ -229,6 +229,37 @@ describe('model list editing', () => {
     expect(mutate).not.toHaveBeenCalled()
   })
 
+  it('persists per-model image capability without changing other model rows', async () => {
+    const { mutate } = await mountSection({
+      providers: {
+        openai: {
+          baseURL: 'https://proxy.example/v1',
+          models: [
+            { id: 'text-only' },
+            { id: 'vision', input: ['text', 'image'] },
+          ],
+        },
+      },
+    })
+    openEditor('openai')
+
+    expandModel(1)
+    expect(screen.getByLabelText<HTMLInputElement>(`${en.modelImageInput} 1`).checked).toBe(false)
+    fireEvent.click(screen.getByLabelText(`${en.modelImageInput} 1`))
+    expect(screen.getByLabelText<HTMLInputElement>(`${en.modelImageInput} 1`).checked).toBe(true)
+
+    expandModel(2)
+    expect(screen.getByLabelText<HTMLInputElement>(`${en.modelImageInput} 2`).checked).toBe(true)
+    fireEvent.click(screen.getByLabelText(`${en.modelImageInput} 2`))
+
+    fireEvent.click(screen.getByText(en.apply))
+    await waitFor(() => { expect(mutate).toHaveBeenCalled() })
+    expect(firstMutate(mutate).ops[0]?.value).toEqual([
+      { id: 'text-only', input: ['text', 'image'] },
+      { id: 'vision', input: ['text'] },
+    ])
+  })
+
   it('reads K and M suffixes and keeps the text the user typed', async () => {
     const { mutate } = await mountSection()
     openEditor('openai')
