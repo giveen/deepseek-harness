@@ -5,7 +5,7 @@
  * runtime's bind-dependent LAN snapshot.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -76,6 +76,10 @@ interface BashContribution {
 }
 
 describe('web-app runtime glue', () => {
+  it('resolves the declared browser opener from the bundle package context', () => {
+    expect(existsSync(internals.browserOpenerModulePath)).toBe(true)
+  })
+
   it('mounts dist serving, prompt section, bash variables, and prints the URL with the LAN snapshot', async () => {
     stageDist()
     const ctx = new Context()

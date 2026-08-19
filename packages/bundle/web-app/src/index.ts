@@ -96,11 +96,14 @@ function launchedThroughSsh(ctx: Context): boolean {
   })
 }
 
+/** Absolute module path for the Web bundle's declared browser opener dependency. */
+const OPEN_MODULE_PATH = createRequire(import.meta.url).resolve('open')
+
 /** Small helper program that invokes the maintained platform opener in a scrubbed child. */
 const BROWSER_OPENER_PROGRAM = `
 try {
-  const { default: open } = await import('open')
-  const launcher = await open(process.argv[1])
+  const { default: open } = await import(process.argv[1])
+  const launcher = await open(process.argv[2])
   if (process.platform === 'win32') {
     const code = launcher.exitCode ?? await new Promise((resolve, reject) => {
       const onError = (error) => { launcher.off('close', onClose); reject(error) }
@@ -123,7 +126,7 @@ function spawnBrowserLauncher(url: string): ChildProcess {
   return spawn(process.execPath, [
     '--input-type=module',
     '--eval', BROWSER_OPENER_PROGRAM,
-    '--', url,
+    '--', OPEN_MODULE_PATH, url,
   ], {
     env: scrubbedParentEnv(),
     stdio: ['ignore', 'inherit', 'pipe'],
@@ -265,7 +268,8 @@ function resolveDistIndex(): string {
 export const internals: {
   resolveDistIndex: () => string
   openBrowser: (url: string) => Promise<void>
-} = { resolveDistIndex, openBrowser }
+  browserOpenerModulePath: string
+} = { resolveDistIndex, openBrowser, browserOpenerModulePath: OPEN_MODULE_PATH }
 
 /**
  * Mount the Web runtime: dist serving, surface prompt, the bash runtime
