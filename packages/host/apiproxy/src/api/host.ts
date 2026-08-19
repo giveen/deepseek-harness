@@ -42,6 +42,8 @@ export interface HostApi {
    * directory (root for session persistence and tool execution); provider/model = the defaults
    * applied when a new agent doesn't specify them explicitly, absent when the host configures
    * no explicit default (the adapter falls back internally);
+   * instanceId = opaque process-lifetime identity used by the Web launcher to detect an
+   * advertised LAN authority served by a different harness process;
    * attachedSessions = count of currently attached sessions (those with a live agent);
    * canOpenPath = whether this deployment can hand a path to a user-visible native desktop.
    */
@@ -50,6 +52,7 @@ export interface HostApi {
     cwd: string
     provider?: string
     model?: string
+    instanceId?: string
     attachedSessions: number
     canOpenPath: boolean
   }>>

@@ -18,7 +18,7 @@ The client runtime provides one `bindSettingsScope` lifecycle per namespace — 
 
 User changes update the live service synchronously and queue a `settings.mutate` path operation through `scope.set`. The scope serializes gestures, sends the latest known namespace revision as `expectedRevision`, records every successful revision, and lets only the latest write settlement republish live state. A rejected or failed latest write reloads Host state. Disposal rejects new work, skips queued operations, suppresses publication by the in-flight operation, and waits for that operation to settle before the plugin reaches quiescence.
 
-Remote browsers cannot call the loopback-only configuration API, so their preferences remain process-local. Dynamic third-party theme ids remain in-process extensions outside the built-in Host schema; removing one resets the live registry without replacing the last durable built-in preference.
+Untrusted remote browsers cannot call the configuration API, so their preferences remain process-local; loopback and declared trusted LAN authorities use the durable Host document. Dynamic third-party theme ids remain in-process extensions outside the built-in Host schema; removing one resets the live registry without replacing the last durable built-in preference.
 
 ## Alternatives considered
 

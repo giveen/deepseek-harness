@@ -30,6 +30,9 @@
       "path": "../../host/webserver"
     },
     {
+      "path": "../../host/apiproxy"
+    },
+    {
       "path": "../../core/system-prompt"
     },
     {

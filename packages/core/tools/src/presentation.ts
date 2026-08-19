@@ -137,7 +137,33 @@ export interface ReadFileLine {
  * `ToolDefinition.presentResult`; omitting the method keeps the pending
  * title and renders the raw result content.
  */
-export type ToolResultView = GenericResultView | TerminalResultView | DiffResultView | SearchResultView | ReadResultView | WebResultView
+export type ToolResultView =
+  | GenericResultView
+  | TerminalResultView
+  | DiffResultView
+  | SearchResultView
+  | ReadResultView
+  | WebResultView
+  | BrowserResultView
+
+/** One bounded PNG captured from a model-facing browser tab for client presentation. */
+export interface BrowserScreenshot {
+  /** Base64-encoded image bytes; the client turns this into a data URL. */
+  data: string
+  /** MIME type of the captured image, currently `image/png`. */
+  mimeType: string
+}
+
+/**
+ * A completed browser action rendered as a visual browser panel. The screenshot
+ * is UI metadata, not model-facing result text; tools keep it in
+ * `output.presentationMeta` so replaying a session can reconstruct the panel.
+ */
+export interface BrowserResultView {
+  card: 'browser'
+  /** The latest viewport image after the action completed. */
+  screenshot: BrowserScreenshot
+}
 
 /**
  * The default completed card: an optional replacement title and reformatted

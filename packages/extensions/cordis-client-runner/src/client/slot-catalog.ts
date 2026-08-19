@@ -1649,6 +1649,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
       'client-ui-skill SkillRow key \'skill\'',
       'client-ui-tool AskQuestionRow key \'ask_user_question\'',
       'client-ui-tool BashRow key \'bash\'',
+      'client-ui-tool BrowserRow',
       'client-ui-tool FileMutationRow key \'edit\'',
       'client-ui-tool FileMutationRow key \'write\'',
       'client-ui-tool ReadRow key \'read\'',

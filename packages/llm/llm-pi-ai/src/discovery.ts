@@ -49,7 +49,6 @@ const LISTABLE_PROTOCOLS: ReadonlySet<string> = new Set([
  */
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
-/** One entry of an OpenAI-compatible `GET /models` reply. */
 interface ListingEntry {
   id?: unknown
   /** Common gateway extensions; absent from the official listings. */
@@ -57,6 +56,14 @@ interface ListingEntry {
   display_name?: unknown
   context_window?: unknown
   context_length?: unknown
+  max_context_length?: unknown
+  max_model_len?: unknown
+  max_model_length?: unknown
+  num_ctx?: unknown
+  n_ctx?: unknown
+  context_size?: unknown
+  max_seq_len?: unknown
+  max_sequence_length?: unknown
   max_tokens?: unknown
   max_output_tokens?: unknown
 }
@@ -149,7 +156,21 @@ function readListing(body: unknown): LlmDiscoveredModel[] {
     const id = label(entry?.id)
     if (id === undefined) continue
     const name = label(entry?.name, entry?.display_name)
-    const contextWindow = capacity(entry?.context_window, entry?.context_length)
+    // OpenAI's official schema does not define a context field. Local
+    // OpenAI-compatible servers commonly expose one of these names instead;
+    // accept only positive integers and keep the precedence deterministic.
+    const contextWindow = capacity(
+      entry?.context_window,
+      entry?.context_length,
+      entry?.max_context_length,
+      entry?.max_model_len,
+      entry?.max_model_length,
+      entry?.num_ctx,
+      entry?.n_ctx,
+      entry?.context_size,
+      entry?.max_seq_len,
+      entry?.max_sequence_length,
+    )
     const maxTokens = capacity(entry?.max_output_tokens, entry?.max_tokens)
     models.push({
       id,

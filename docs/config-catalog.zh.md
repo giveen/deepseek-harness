@@ -953,6 +953,12 @@ export interface PiAiProviderProfile {
    */
   defaultContextWindow?: number
   /**
+   * Refresh interval for context metadata from an OpenAI-compatible `/models`
+   * endpoint (default five minutes). A zero value refreshes on every model
+   * resolution; explicit model `contextWindow` values still win.
+   */
+  contextMetadataRefreshMs?: number
+  /**
    * Output capability for a model this route lists that neither the entry nor
    * the installed catalog sizes (default 32,768). This sizes the model; it
    * never becomes a per-request cap on its own.
@@ -2374,6 +2380,26 @@ export interface Config {
 
 来源：[`packages/shell/tool-bash-persistent/src/index.ts:400`](../packages/shell/tool-bash-persistent/src/index.ts)
 
+<a id="deepseek-aidsh-tool-camofox"></a>
+
+## `@deepseek-ai/dsh-tool-camofox`
+
+需要：`tools` · `systemPrompt` · `subprocess`
+
+```ts config-catalog
+/** Plugin configuration. */
+export interface Config {
+  /** camofox-browser server URL. */
+  serverUrl?: string
+  /** Start and own the bundled camofox-browser server. */
+  autoStart?: boolean
+  /** Cooperative timeout budget in milliseconds. */
+  timeoutMs?: number
+}
+```
+
+来源：[`packages/web/camofox/src/index.ts:40`](../packages/web/camofox/src/index.ts)
+
 <a id="deepseek-aidsh-tool-fs"></a>
 
 ## `@deepseek-ai/dsh-tool-fs`
@@ -2886,6 +2912,8 @@ export interface Config {
   surfaceContext: boolean
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
+  /** Maximum time allowed for one advertised-LAN instance probe. */
+  lanInstanceProbeTimeoutMs?: number
 }
 ```
 

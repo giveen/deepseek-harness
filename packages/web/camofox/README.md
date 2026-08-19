@@ -19,7 +19,7 @@ The server is not shared with an unrelated process: dsh owns this loopback proce
 | Tool | Description |
 |---|---|
 | `browser_navigate` | Open an HTTP(S) tab and return its `tabId` |
-| `browser_snapshot` | Get the latest accessibility tree and page-specific element refs |
+| `browser_snapshot` | Get the latest accessibility tree, page-specific element refs, and a UI-only viewport screenshot |
 | `browser_click` | Click exactly one element by a current ref or CSS selector |
 | `browser_type` | Type text into an input by a current snapshot ref |
 | `browser_scroll` | Scroll the page up or down |
@@ -49,7 +49,7 @@ Add to your profile's `cordis.patch.yml`:
 
 ## Runtime behavior
 
-With `autoStart: true`, plugin activation fails if the bundled server cannot start or does not answer `/health` within 30 seconds. The plugin owns that process and waits for it to stop during teardown. The plugin validates camofox JSON responses before returning them to the model and rejects malformed responses or HTTP failures. It sends `userId` from the calling agent's session id and groups that agent's tabs under `sessionKey: dsh-browser`; it does not share browser cookies between agents. The current client is intended for a loopback camofox server; do not expose the server beyond loopback because this plugin does not yet carry an access-key credential. Binary refresh failures are non-fatal during installation, but startup still reports a missing or unusable browser through the managed server readiness path.
+With `autoStart: true`, plugin activation fails if the bundled server cannot start or does not answer `/health` within 30 seconds. The plugin owns that process and waits for it to stop during teardown. The plugin validates camofox JSON responses before returning them to the model and rejects malformed responses or HTTP failures. After each successful browser operation it makes a best-effort viewport PNG capture, bounds the retained bytes at 1.5 MB, and places the capture in replayable presentation metadata; the model-facing result text remains the accessibility or action text. It sends `userId` from the calling agent's session id and groups that agent's tabs under `sessionKey: dsh-browser`; it does not share browser cookies between agents. The current client is intended for a loopback camofox server; do not expose the server beyond loopback because this plugin does not yet carry an access-key credential. Binary refresh failures are non-fatal during installation, but startup still reports a missing or unusable browser through the managed server readiness path.
 
 The model-facing tools expose no browser credentials, access key, or timeout argument. `timeoutMs` is deployment policy attached to the tool definition, and the tool forwards its cancellation signal to every request.
 
@@ -65,7 +65,7 @@ pnpm --filter @deepseek-ai/dsh-tool-camofox exec tsc -b
 
 #### What the model sees
 
-The model receives five tools: `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, and `browser_scroll`. A navigation result supplies a `tabId`; a snapshot supplies page-specific refs such as `e5`; click accepts one current ref or CSS selector; type accepts a current ref; and scroll returns a direction and amount. The prompt instructs the model to snapshot before ref use and after navigation, page-changing actions, or scrolling.
+The model receives five tools: `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, and `browser_scroll`. A navigation result supplies a `tabId`; a snapshot supplies page-specific refs such as `e5`; click accepts one current ref or CSS selector; type accepts a current ref; and scroll returns a direction and amount. The prompt instructs the model to snapshot before ref use and after navigation, page-changing actions, or scrolling. The Web client renders the latest successful capture in an open Browser panel inside the corresponding tool row; the screenshot is UI metadata and is not added to the model prompt.
 
 #### Token effect
 
@@ -74,3 +74,9 @@ Accessibility snapshots are substantially smaller than raw page HTML, but each s
 #### KV Cache effect
 
 The tool schemas and operating guidance stay stable across calls, while tab ids, URLs, snapshots, refs, and action results vary per session. Repeated browser actions therefore reuse the stable tool prefix but append changing page state to the request context.
+
+## Known Limitations and Deferred Work
+
+- The managed server is loopback-only and has no access-key authentication; exposing it beyond `127.0.0.1` is not supported until request authentication is added.
+- Browser state is isolated per agent session and is not intentionally shared between agents.
+- Screenshot capture is best-effort; a missing or oversized PNG leaves the browser action and its text result available without a visual panel.

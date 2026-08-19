@@ -33,8 +33,9 @@ function fakeApi(
         : { rpcId: 'r', result: { ok: false as const, error: { code: 'internal', message: options.failList, details: {} } } }),
     },
     settings: {
-      // Loopback-only in production; a read-only provider answers writable:false
-      // and the row disables its control instead of offering a refused write.
+      // The Host trust policy applies in production; a read-only provider
+      // answers writable:false and the row disables its control instead of
+      // offering a refused write.
       describe: () => Promise.resolve({
         rpcId: 'r',
         result: {
@@ -66,9 +67,9 @@ describe('the agent-preset settings controller', () => {
 
     await controller.load()
 
-    // `settings.describe` is loopback-only and reports a read-only provider;
-    // offering a control whose write answers `settings-rejected` would promise
-    // a switch the host refuses.
+    // `settings.describe` follows the Host trust policy and reports a
+    // read-only provider; offering a control whose write answers
+    // `settings-rejected` would promise a switch the host refuses.
     expect(controller.store.getSnapshot().writable).toBe(false)
     expect(controller.store.getSnapshot().currentValue).toBe('standard')
   })

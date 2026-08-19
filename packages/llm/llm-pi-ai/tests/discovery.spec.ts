@@ -111,7 +111,7 @@ describe('draft-provider model discovery', () => {
       body: JSON.stringify({
         data: [
           { id: 'acme-large', display_name: 'Acme Large', context_length: 65_536, max_output_tokens: 4096 },
-          { id: 'acme-small' },
+          { id: 'acme-small', max_model_len: 8192 },
         ],
       }),
     })
@@ -121,7 +121,7 @@ describe('draft-provider model discovery', () => {
 
     expect(models).toEqual([
       { id: 'acme-large', name: 'Acme Large', contextWindow: 65_536, maxTokens: 4096 },
-      { id: 'acme-small' },
+      { id: 'acme-small', contextWindow: 8192 },
     ])
     expect(server.paths).toEqual(['/v1/models'])
     expect(server.headers[0]?.authorization).toBe('Bearer probe-key')
@@ -174,8 +174,10 @@ describe('draft-provider model discovery', () => {
     // A route no profile declares yet is the create case: nothing is stored.
     await ctx.llm.discoverModels('llm-pi-ai', { provider: 'not-declared-yet', baseURL: server.url })
 
+    // Plugin activation also warms the route's context metadata once before
+    // these three configuration-time probes.
     expect(server.headers.map(headers => headers.authorization))
-      .toEqual(['Bearer stored-key', 'Bearer typed', undefined])
+      .toEqual(['Bearer stored-key', 'Bearer stored-key', 'Bearer typed', undefined])
   })
 
   it('leaves a catalog route\'s credential unresolved, having never reached the network', async () => {

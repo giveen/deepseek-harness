@@ -410,7 +410,7 @@ export interface ConnectionConfig {
 }
 ```
 
-Source: [`packages/client/connection/src/index.ts:50`](../packages/client/connection/src/index.ts)
+Source: [`packages/client/connection/src/index.ts:51`](../packages/client/connection/src/index.ts)
 
 <a id="deepseek-aidsh-client-hmr"></a>
 
@@ -545,7 +545,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/extensions/cordis-host-runner/src/index.ts:88`](../packages/extensions/cordis-host-runner/src/index.ts)
+Source: [`packages/extensions/cordis-host-runner/src/index.ts:99`](../packages/extensions/cordis-host-runner/src/index.ts)
 
 <a id="deepseek-aidsh-credentials-local"></a>
 
@@ -951,6 +951,12 @@ export interface PiAiProviderProfile {
    */
   defaultContextWindow?: number
   /**
+   * Refresh interval for context metadata from an OpenAI-compatible `/models`
+   * endpoint (default five minutes). A zero value refreshes on every model
+   * resolution; explicit model `contextWindow` values still win.
+   */
+  contextMetadataRefreshMs?: number
+  /**
    * Output capability for a model this route lists that neither the entry nor
    * the installed catalog sizes (default 32,768). This sizes the model; it
    * never becomes a per-request cap on its own.
@@ -1079,7 +1085,7 @@ type WithheldThinkingFormat = 'chat-template' | 'qwen-chat-template'
 
 Depends on: `Api` (`@earendil-works/pi-ai`) · `CacheRetention` (`@earendil-works/pi-ai`) · `Model` (`@earendil-works/pi-ai`) · `ModelThinkingLevel` (`@earendil-works/pi-ai`) · `OpenAICompletionsCompat` (`@earendil-works/pi-ai`) · [`RetryPolicyConfig`](../packages/llm/llm/src/index.ts) · `ThinkingBudgets` (`@earendil-works/pi-ai`) · `Transport` (`@earendil-works/pi-ai`)
 
-Source: [`packages/llm/llm-pi-ai/src/config.ts:172`](../packages/llm/llm-pi-ai/src/config.ts)
+Source: [`packages/llm/llm-pi-ai/src/config.ts:185`](../packages/llm/llm-pi-ai/src/config.ts)
 
 <a id="deepseek-aidsh-llm-replay"></a>
 
@@ -2372,6 +2378,26 @@ export interface Config {
 
 Source: [`packages/shell/tool-bash-persistent/src/index.ts:400`](../packages/shell/tool-bash-persistent/src/index.ts)
 
+<a id="deepseek-aidsh-tool-camofox"></a>
+
+## `@deepseek-ai/dsh-tool-camofox`
+
+Requires: `tools` · `systemPrompt` · `subprocess`
+
+```ts config-catalog
+/** Plugin configuration. */
+export interface Config {
+  /** camofox-browser server URL. */
+  serverUrl?: string
+  /** Start and own the bundled camofox-browser server. */
+  autoStart?: boolean
+  /** Cooperative timeout budget in milliseconds. */
+  timeoutMs?: number
+}
+```
+
+Source: [`packages/web/camofox/src/index.ts:43`](../packages/web/camofox/src/index.ts)
+
 <a id="deepseek-aidsh-tool-fs"></a>
 
 ## `@deepseek-ai/dsh-tool-fs`
@@ -2794,7 +2820,7 @@ export interface Config {
 export type ToolPresentationMode = 'native' | 'code' | 'both'
 ```
 
-Source: [`packages/core/tools/src/index.ts:654`](../packages/core/tools/src/index.ts)
+Source: [`packages/core/tools/src/index.ts:656`](../packages/core/tools/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 
@@ -2884,10 +2910,12 @@ export interface Config {
   surfaceContext: boolean
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
+  /** Maximum time allowed for one advertised-LAN instance probe. */
+  lanInstanceProbeTimeoutMs?: number
 }
 ```
 
-Source: [`packages/bundle/web-app/src/index.ts:38`](../packages/bundle/web-app/src/index.ts)
+Source: [`packages/bundle/web-app/src/index.ts:41`](../packages/bundle/web-app/src/index.ts)
 
 <a id="deepseek-aidsh-web-fetch-http"></a>
 

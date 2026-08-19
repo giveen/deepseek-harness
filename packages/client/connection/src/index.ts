@@ -1,4 +1,5 @@
 /** Host HTTP bridge for browser-client RPC. */
+import { networkInterfaces } from 'node:os'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-attachment'
@@ -67,24 +68,36 @@ export const Config: z<ConnectionConfig> = z.object({
 })
 
 /**
- * Methods gated to loopback even on a trusted-host deployment. Native dialogs
- * act on the host machine; the settings and credential domains mutate the
- * user's configuration and secret store, and READING them is equally
- * privileged — `settings.describe` returns every exposed namespace's
- * configuration and `credentials.describe` reports whether an arbitrary
- * environment-variable name is configured and where from, which is
- * reconnaissance no anonymous caller should have. `trustedHosts` is a
- * DNS-rebinding fence, explicitly not authentication, so the whole
- * configuration plane stays loopback-same-origin until a real authentication
- * layer exists. `llm.discoverModels` belongs to that plane on both counts: it
- * carries a draft credential, and it makes the HOST issue a GET to a URL the
- * caller chose and reports back the status or the parsed body — an anonymous
- * LAN caller would have a probe for whatever the host can reach and the
- * browser cannot.
+ * Derive the non-loopback IPv4 authorities accepted by an all-interfaces Web
+ * bind. The Web bundle prints the same addresses, but the transport owns the
+ * request fence and must not depend on a sibling plugin's child-scoped service
+ * for its security input.
+ * @param ctx - context carrying the active Web server.
+ * @param configured - explicit deployment authorities.
+ * @returns configured authorities followed by unique LAN IPv4 literals.
+ */
+function resolveTrustedHosts(ctx: Context, configured: readonly string[]): string[] {
+  const derived = ctx.webServer.host === '0.0.0.0'
+    ? Object.values(networkInterfaces()).flat()
+      .filter((iface): iface is NonNullable<typeof iface> => iface !== undefined && iface.family === 'IPv4' && !iface.internal)
+      .map(iface => iface.address)
+    : []
+  return [...new Set([...configured, ...derived])]
+}
+
+/**
+ * Methods that remain loopback-only even on a trusted-host deployment. Native
+ * dialogs act on the host machine, preset authoring changes the deployment's
+ * runnable roster, and `settings.openDocument` hands a host-owned document to
+ * the desktop opener. The rest of the configuration plane is intentionally
+ * available to trusted LAN authorities: a LAN operator needs the redacted
+ * settings directory, provider catalog, credential status, writes, and model
+ * discovery to manage the same Web host from another device.
  *
- * The model catalog (`llm.providers`, `llm.models`) is deliberately NOT here:
- * it carries provider ids, display names, and model lists — no endpoints,
- * keys, or key state — and a LAN client's model picker legitimately needs it.
+ * `trustedHosts` is a DNS-rebinding fence, not authentication. Enabling a
+ * trusted authority therefore grants that authority the same settings and
+ * credential-management access as the local Web page; deployments that need
+ * user authentication must place an authenticated proxy in front of Web.
  */
 const PRIVILEGED_METHODS = new Set([
   // A preset composition names the plugins a session runs, so reading one is
@@ -107,15 +120,7 @@ const PRIVILEGED_METHODS = new Set([
   'agentPreset.remove',
   'host.pickDirectory',
   'host.openPath',
-  'settings.describe',
   'settings.openDocument',
-  'settings.update',
-  'settings.replace',
-  'settings.mutate',
-  'credentials.describe',
-  'credentials.set',
-  'credentials.unset',
-  'llm.discoverModels',
 ])
 
 /**
@@ -129,7 +134,7 @@ const PRIVILEGED_METHODS = new Set([
  */
 export function apply(ctx: Context, config?: ConnectionConfig): void {
   // The Loader resolves schema defaults; hand-built test contexts may pass none.
-  const trustedHosts = config?.trustedHosts ?? []
+  const trustedHosts = resolveTrustedHosts(ctx, config?.trustedHosts ?? [])
   const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
   // Config boundary: a malformed entry fails the load loudly here rather than
   // silently authorizing its hostname prefix at request time.

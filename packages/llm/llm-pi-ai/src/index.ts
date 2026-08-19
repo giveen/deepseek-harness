@@ -207,6 +207,12 @@ export function apply(ctx: Context, config: Config): void {
         + ` sending that message as provider-neutral content (${reason})`,
       )
     },
+    onContextMetadataWarning: ({ provider, model, message }) => {
+      ctx.logger.warn(
+        `llm-pi-ai: could not refresh context metadata for route "${provider}/${model}";`
+        + ` using the last known capacity (${message})`,
+      )
+    },
   })
   // The full installed catalog is configurable from the moment the plugin
   // mounts — dormant or not — so configuration surfaces can offer every
@@ -280,6 +286,10 @@ export function apply(ctx: Context, config: Config): void {
     registeredFacts = facts
   }
   ensureRegistrationFacts()
+  // Warm OpenAI-compatible context metadata without delaying plugin activation;
+  // the adapter retains its last good or configured value if the endpoint is
+  // not ready yet.
+  void adapter.warmContextMetadata()
 
   installSettingsSection(ctx, NS, Config, config, {
     // Refuse an unserviceable section where it is written: without this a
@@ -298,6 +308,7 @@ export function apply(ctx: Context, config: Config): void {
       // is not serving. The previous routes keep serving either way.
       try {
         ensureRegistrationFacts()
+        void adapter.warmContextMetadata()
       } catch (error) {
         ctx.logger.error('llm-pi-ai: keeping the previously registered routes after a refused update')
         ctx.logger.error(error)

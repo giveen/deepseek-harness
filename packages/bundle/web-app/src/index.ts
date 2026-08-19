@@ -12,10 +12,13 @@
 
 import { createRequire } from 'node:module'
 import { networkInterfaces } from 'node:os'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { addHarnessSourceSection } from '@deepseek-ai/dsh-app-boot'
+import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import * as FrontendStatic from '@deepseek-ai/dsh-host-frontend-static'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-host-webserver'
@@ -47,12 +50,18 @@ export interface Config {
   surfaceContext: boolean
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
+  /** Maximum time allowed for one advertised-LAN instance probe. */
+  lanInstanceProbeTimeoutMs?: number
 }
+
+/** Default deadline used when a hand-built test context bypasses schema normalization. */
+const DEFAULT_LAN_INSTANCE_PROBE_TIMEOUT_MS = 2_000
 
 export const Config: z<Config> = z.object({
   printUrl: z.boolean().default(true),
   surfaceContext: z.boolean().default(true),
   trustedHosts: z.array(String).default([]),
+  lanInstanceProbeTimeoutMs: z.natural().min(1).default(2_000),
 })
 
 /** Bind-dependent Web values shared by the trust fence and URL display. */
@@ -89,6 +98,57 @@ export function resolveLanTrust(bindHost: string, extra: readonly string[]): Web
       .map(iface => iface.address)
     : []
   return { lanAddresses, trustedHosts: [...lanAddresses, ...extra] }
+}
+
+/**
+ * Probe the LAN authorities advertised by this process and warn when one is
+ * served by another harness instance. Static files can come from a different
+ * process while the page still renders, so this check uses the API's opaque
+ * process identity rather than comparing URLs or attached-session counts.
+ * @param ctx - context carrying the local API and logger.
+ * @param runtime - bound LAN addresses and the configured probe deadline.
+ */
+async function checkLanInstances(
+  ctx: Context,
+  runtime: WebRuntimeValues,
+  timeoutMs: number,
+): Promise<void> {
+  const api = ctx.root.get('apiProxy') as ApiProxy | undefined
+  if (api === undefined || runtime.lanAddresses.length === 0) return
+  const local = await api.host.describe({ rpcId: RpcId(`web-instance-local-${randomUUID()}`), payload: {} })
+  if (!local.result.ok || local.result.value.instanceId === undefined) return
+  for (const address of runtime.lanAddresses) {
+    const authority = `${address}:${String(ctx.webServer.port)}`
+    try {
+      const response = await fetch(`http://${authority}/api/host.describe`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'client-request',
+          rpcId: RpcId(`web-instance-remote-${randomUUID()}`),
+          method: 'host.describe',
+          payload: {},
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
+      const body: unknown = await response.json()
+      const remote = (body as {
+        result?: { ok?: unknown; value?: { instanceId?: unknown } }
+      }).result
+      if (remote?.ok !== true || typeof remote.value?.instanceId !== 'string') {
+        throw new Error('host.describe returned no instance identity')
+      }
+      if (remote.value.instanceId !== local.result.value.instanceId) {
+        ctx.logger.warn(
+          `web-app: LAN authority ${authority} serves a different harness instance; `
+          + 'session sharing is unavailable there. Stop the other dsh web process or use this instance\'s URL.',
+        )
+      }
+    } catch (error: unknown) {
+      ctx.logger.warn(`web-app: could not verify LAN authority ${authority}: ${String(error)}`)
+    }
+  }
 }
 
 /** Model-visible orientation and acceptance boundary for sessions created through `dsh web`. */
@@ -134,8 +194,13 @@ export const internals: { resolveDistIndex: () => string } = { resolveDistIndex 
  */
 export function apply(ctx: Context, config: Config): void {
   const runtime = resolveLanTrust(ctx.webServer.host, config.trustedHosts)
-  // Release dependent rows only after bind-dependent trust has been sampled once.
-  ctx.provide(WEB_RUNTIME_SERVICE, runtime)
+  // The connection row is a sibling, not a child, so a service provided on
+  // this row's context would be invisible to it. Publish the bind snapshot in
+  // the shared root scope and attach that root disposer to this row's fiber;
+  // the service remains available for the row's lifetime and is retracted with
+  // it rather than leaking across reloads.
+  const releaseRuntime = ctx.root.provide(WEB_RUNTIME_SERVICE, runtime)
+  ctx.effect(() => releaseRuntime, 'web-runtime: shared bind snapshot')
   ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
   if (config.surfaceContext) {
     ctx.inject(['systemPrompt'], (promptCtx) => {
@@ -171,15 +236,23 @@ export function apply(ctx: Context, config: Config): void {
     // readiness by waiting for its Loader tree, or prints at once in a
     // hand-built context without Loader.
     const settled = ctx.get('loader')?.await()
-    if (settled === undefined) printUrl()
+    const ready = (): void => {
+      // The tree can be disposed while the boot was in flight (early
+      // SIGTERM); a URL line for a dead server would only mislead, and
+      // reading the torn-down port would turn a clean shutdown into a crash.
+      if (ctx.get('webServer') === undefined) return
+      printUrl()
+      void checkLanInstances(
+        ctx,
+        runtime,
+        config.lanInstanceProbeTimeoutMs ?? DEFAULT_LAN_INSTANCE_PROBE_TIMEOUT_MS,
+      )
+    }
+    if (settled === undefined) ready()
     else {
-      void settled.then(() => {
-        // The tree can be disposed while the boot was in flight (early
-        // SIGTERM); a URL line for a dead server would only mislead, and
-        // reading the torn-down port would turn a clean shutdown into a crash.
-        if (ctx.get('webServer') !== undefined) printUrl()
-      // Loader reports a failed boot; this row only stays quiet.
-      }, () => {})
+      void settled.then(ready, () => {
+        // Loader reports a failed boot; this row stays quiet.
+      })
     }
   }
 }

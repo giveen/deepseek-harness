@@ -1,6 +1,7 @@
 /** Card-aware output body for the selected Tool call in details. */
-import { DiffBlock, ReadBlock, SearchBlock, TerminalBlock, WebBlock } from '@deepseek-ai/dsh-client-ui-primitives'
+import { BrowserBlock, DiffBlock, ReadBlock, SearchBlock, TerminalBlock, WebBlock } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ToolDetailsProps } from '../contract/slots.ts'
+import { browserCardModel } from './models/browser-card-model.ts'
 import { diffCardModel } from './models/diff-card-model.ts'
 import { readCardModel } from './models/read-card-model.ts'
 import { searchCardModel } from './models/search-card-model.ts'
@@ -47,6 +48,8 @@ export function ToolDetails({ block, cwd, t }: ToolDetailsContentProps) {
       </>
     )
   }
+  const browser = browserCardModel(block)
+  if (browser !== null) return <BrowserBlock {...browser} className={css.web} />
   const web = webCardModel(block)
   if (web !== null) {
     const body = 'kind' in block ? resultText(block) : ''

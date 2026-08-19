@@ -73,6 +73,53 @@ describe('PiAiAdapter provider routing', () => {
     expect(server.paths).toEqual(['/chat/completions'])
   })
 
+  it('refreshes context capacity from local OpenAI-compatible model metadata', async () => {
+    const server = await mockServer(
+      [{ events: textEvents }],
+      [{ id: 'deepseek-v4-flash', max_model_len: 4096 }],
+    )
+    const ctx = await harness(server.url)
+
+    await expect(ctx.llm.resolveModelInfo('deepseek', 'deepseek-v4-flash'))
+      .resolves.toMatchObject({ context: { contextWindow: 4096 } })
+    await assemble(ctx, {
+      model: 'deepseek-v4-flash',
+      messages: [createUserMessage({
+        content: [{ type: 'text', text: 'hi' }],
+        source: { kind: 'plugin', plugin: 'test' },
+      })],
+    })
+
+    // The exact-model lookup and the request share one route-wide TTL cache.
+    expect(server.metadataRequests).toBe(1)
+    expect(server.paths).toEqual(['/chat/completions'])
+  })
+
+  it('refreshes capacity again when the configured TTL expires', async () => {
+    let listing: unknown[] = [{ id: 'deepseek-v4-flash', context_length: 4096 }]
+    const server = await mockServer([{ events: textEvents }], () => listing)
+    const ctx = await harness(server.url, { contextMetadataRefreshMs: 0 })
+
+    await expect(ctx.llm.resolveModelInfo('deepseek', 'deepseek-v4-flash'))
+      .resolves.toMatchObject({ context: { contextWindow: 4096 } })
+    listing = [{ id: 'deepseek-v4-flash', context_length: 8192 }]
+    await expect(ctx.llm.resolveModelInfo('deepseek', 'deepseek-v4-flash'))
+      .resolves.toMatchObject({ context: { contextWindow: 8192 } })
+
+    expect(server.metadataRequests).toBe(2)
+  })
+
+  it('does not probe when a route explicitly sets context capacity', async () => {
+    const server = await mockServer([{ events: textEvents }])
+    const ctx = await harness(server.url, {
+      modelOverrides: { 'deepseek-v4-flash': { contextWindow: 1234 } },
+    })
+
+    await expect(ctx.llm.resolveModelInfo('deepseek', 'deepseek-v4-flash'))
+      .resolves.toMatchObject({ context: { contextWindow: 1234 } })
+    expect(server.metadataRequests).toBe(0)
+  })
+
   it('merges profile headers with Harness attribution winning', async () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = await harness(server.url, {

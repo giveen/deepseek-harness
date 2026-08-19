@@ -802,4 +802,21 @@ describe('resolveBase', () => {
       delete globalWithLocation.location
     }
   })
+
+  it('mints RPC ids over an insecure LAN origin without randomUUID', async () => {
+    vi.stubGlobal('crypto', {
+      getRandomValues(bytes: Uint8Array) {
+        return bytes.fill(0)
+      },
+    })
+    try {
+      const globalWithLocation = globalThis as { location?: { origin?: string } }
+      globalWithLocation.location = { origin: 'http://192.0.2.20:3080' }
+      const response = await client().sessions.list({})
+      expect(response.result).toMatchObject({ ok: true, value: { items: [] } })
+      delete globalWithLocation.location
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

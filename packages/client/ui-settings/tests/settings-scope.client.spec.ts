@@ -276,7 +276,7 @@ describe('SettingsScopeController', () => {
     expect(published).toEqual([undefined])
   })
 
-  it('keeps a remote browser in memory mode without Host calls', async () => {
+  it('keeps an explicitly local scope in memory mode without Host calls', async () => {
     const describeCall = vi.fn()
     const mutate = vi.fn()
     const scope = new SettingsScopeController<UiTestSettings>(
@@ -402,8 +402,8 @@ describe('SettingsScopeBinder.bind', () => {
     expect(describeCall).toHaveBeenCalledTimes(3)
   })
 
-  it('binds a remote browser in memory mode without starting a settings read', async () => {
-    const describeCall = vi.fn()
+  it('binds a trusted LAN scope in Host mode instead of falling back to memory', async () => {
+    const describeCall = vi.fn().mockResolvedValue(described({ preference: 'dark' }, 1))
     const ctx = new Context()
     ctx.provide('connection', {
       api: { settings: { describe: describeCall } },
@@ -419,8 +419,8 @@ describe('SettingsScopeBinder.bind', () => {
       },
     })
     await fiber.await()
-    expect(scope.getSnapshot()).toMatchObject({ status: 'unavailable', mode: 'memory', writable: false })
+    await vi.waitFor(() => { expect(describeCall).toHaveBeenCalledOnce() })
+    expect(scope.getSnapshot()).toMatchObject({ status: 'ready', mode: 'host', value: { preference: 'dark' } })
     await fiber.dispose()
-    expect(describeCall).not.toHaveBeenCalled()
   })
 })

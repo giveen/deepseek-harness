@@ -1,5 +1,5 @@
-// Trusted non-loopback Web access cannot call the loopback-only settings API;
-// the notice therefore advances for this browser process and returns on reload.
+// Trusted non-loopback Web access uses the same Host settings API as loopback;
+// the notice acknowledgement therefore survives a reload.
 import type { Browser, Page } from 'playwright'
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -38,7 +38,7 @@ describe.skipIf(MODE === 'record')('web e2e: remote welcome notice', () => {
     await scaffold?.close()
   })
 
-  it('advances process-locally and presents the notice again after reload', async () => {
+  it('persists the acknowledgement and keeps the notice dismissed after reload', async () => {
     const welcome = page.getByRole('dialog', { name: WELCOME_NOTICE_COPY.zh.title })
     await welcome.waitFor({ timeout: 15_000 })
     expect(await page.locator('#root').evaluate(root => (root as HTMLElement).inert)).toBe(true)
@@ -53,7 +53,11 @@ describe.skipIf(MODE === 'record')('web e2e: remote welcome notice', () => {
     const reloadWarnings = tripwire.warnings.length
     await page.reload({ waitUntil: 'load' })
     acknowledgeReloadConnectionLoss(tripwire, reloadWarnings)
-    await welcome.waitFor({ timeout: 15_000 })
+    await expect.poll(() => welcome.count(), { timeout: 15_000 }).toBe(0)
+    await expect.poll(
+      () => page.locator('#root').evaluate(root => (root as HTMLElement).inert),
+      { timeout: 15_000 },
+    ).toBe(false)
     expect(tripwire.warnings).toEqual([])
     expect(tripwire.pageErrors).toEqual([])
   }, 60_000)

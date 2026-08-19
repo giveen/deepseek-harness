@@ -35,7 +35,7 @@ export class WelcomeNoticeStore {
 
   /**
    * @param api - settings wire face used for durable reads and writes.
-   * @param persistence - remote browsers use memory because settings is loopback-only.
+   * @param persistence - explicit process-local fallback for callers that cannot use Host settings.
    */
   constructor(
     private readonly api: Pick<IApiClient, 'settings'>,

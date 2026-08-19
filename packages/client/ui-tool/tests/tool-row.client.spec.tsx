@@ -227,6 +227,31 @@ describe('ToolRow', () => {
     expect(view.getByText('List files')).toBeTruthy()
   })
 
+  it('opens when browser material arrives and respects a later manual collapse', () => {
+    const view = render(<ToolRow {...rowProps} body={null} browser={null} />)
+    view.rerender(
+      <ToolRow
+        {...rowProps}
+        body={null}
+        browser={{ screenshot: { data: 'AQID', mimeType: 'image/png' } }}
+        defaultExpanded
+      />,
+    )
+    const row = view.getByRole('button')
+    expect(row.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.click(row)
+    expect(row.getAttribute('aria-expanded')).toBe('false')
+    view.rerender(
+      <ToolRow
+        {...rowProps}
+        body={null}
+        browser={{ screenshot: { data: 'AQID', mimeType: 'image/png' } }}
+        defaultExpanded
+      />,
+    )
+    expect(view.getByRole('button').getAttribute('aria-expanded')).toBe('false')
+  })
+
   it('running keeps the icon (row sweep carries the signal); error swaps in a StateDot', () => {
     const runningView = render(<ToolRow {...rowProps} state="running" />)
     expect(runningView.queryByTestId('tool-icon')).not.toBeNull()

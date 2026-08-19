@@ -628,6 +628,8 @@ export interface ApiProxyDefaults {
   sessionExportCompressionLevel?: SessionLogCompressionLevel
   /** Maximum artifact size eligible for one cold blankness read. */
   coldBlankProbeMaxBytes?: number
+  /** Opaque process-lifetime identity returned by `host.describe` for Web instance checks. */
+  instanceId?: string
   /**
    * Whether handing a path to the native opener can work at all — the
    * `hasDocument` capability the preset roster reports, and the switch
@@ -1073,6 +1075,7 @@ function changedWorkspaceView(workspaceId: string, value: unknown): WorkspaceVie
  * @returns the ApiProxy implementation.
  */
 export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiProxy {
+  const instanceId = defaults.instanceId ?? randomUUID()
   const sessionExportCompressionLevel = defaults.sessionExportCompressionLevel
     ?? DEFAULT_SESSION_LOG_COMPRESSION_LEVEL
   const coldBlankProbeMaxBytes = defaults.coldBlankProbeMaxBytes
@@ -2873,7 +2876,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           // start from, so a saved default has to be what it reports.
           provider: selection.provider,
           model: selection.model,
+          instanceId,
           attachedSessions: ctx.agents.list().length,
+
           canOpenPath: canOpenPaths(),
         }))
       },

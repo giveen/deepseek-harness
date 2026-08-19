@@ -50,6 +50,7 @@ import type {
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
+import { discoverModels } from './discovery.ts'
 import { toPiContext } from './context.ts'
 import { toStreamChunks } from './stream.ts'
 
@@ -81,6 +82,13 @@ export interface PiAiAdapterOptions {
    * conversion because its stored replay state is unusable by this build.
    */
   onReplayDegrade?: (detail: { provider: string; model: string; reason: string }) => void
+  /** Report a failed optional context-metadata refresh without failing the model call. */
+  onContextMetadataWarning?: (detail: { provider: string; model: string; message: string }) => void
+}
+
+interface ContextMetadataCacheEntry {
+  fetchedAt: number
+  contextWindows: ReadonlyMap<string, number>
 }
 
 /** Copy profile stream knobs into pi-ai's common option vocabulary. */
@@ -190,6 +198,8 @@ function requestHeaders(headers: Readonly<Record<string, string>> | undefined): 
  */
 export class PiAiAdapter extends LlmAdapter {
   private snapshot: PiAiSnapshot | undefined
+  private readonly contextMetadata = new Map<string, ContextMetadataCacheEntry>()
+  private readonly contextMetadataInFlight = new Map<string, Promise<ContextMetadataCacheEntry>>()
 
   constructor(private readonly config: PiAiAdapterOptions) {
     super()
@@ -229,6 +239,85 @@ export class PiAiAdapter extends LlmAdapter {
     return resolved
   }
 
+  /**
+   * Resolve the effective context capacity, refreshing OpenAI-compatible local
+   * server metadata on startup and after the configured TTL. Explicit profile
+   * capacities win; failed or incomplete probes retain the last good value and
+   * never make an otherwise usable model call fail.
+   */
+  private async contextWindowOf(
+    profile: ResolvedPiAiProviderProfile,
+    model: Model<Api>,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    const configured = profile.configuredContextWindows.get(model.id)
+    if (configured !== undefined) return configured
+    if (model.api !== 'openai-completions' && model.api !== 'openai-responses') return model.contextWindow
+    // An installed catalog's built-in endpoint is already the authority for
+    // its capacity. Refresh only when the deployment explicitly points this
+    // route at an OpenAI-compatible endpoint, which is also the local-server
+    // configuration posture.
+    if (profile.baseURL === undefined) return model.contextWindow
+    const baseURL = model.baseUrl
+    const cacheKey = `${profile.provider}\u0000${baseURL}`
+    const now = Date.now()
+    const cached = this.contextMetadata.get(cacheKey)
+    if (cached !== undefined && now - cached.fetchedAt < profile.contextMetadataRefreshMs) {
+      return cached.contextWindows.get(model.id) ?? model.contextWindow
+    }
+    let refresh = this.contextMetadataInFlight.get(cacheKey)
+    if (refresh === undefined) {
+      refresh = this.refreshContextMetadata(profile, baseURL, signal)
+      this.contextMetadataInFlight.set(cacheKey, refresh)
+      void refresh.then(
+        (entry) => { this.contextMetadata.set(cacheKey, entry) },
+        () => undefined,
+      ).then(() => {
+        this.contextMetadataInFlight.delete(cacheKey)
+      })
+    }
+    try {
+      const entry = await refresh
+      return entry.contextWindows.get(model.id) ?? cached?.contextWindows.get(model.id) ?? model.contextWindow
+    } catch (error: unknown) {
+      if (signal?.aborted) throw error
+      this.config.onContextMetadataWarning?.({
+        provider: profile.provider,
+        model: model.id,
+        message: error instanceof Error ? error.message : String(error),
+      })
+      return cached?.contextWindows.get(model.id) ?? model.contextWindow
+    }
+  }
+
+  /** Fetch one route-wide model metadata snapshot for the context cache. */
+  private async refreshContextMetadata(
+    profile: ResolvedPiAiProviderProfile,
+    baseURL: string,
+    signal?: AbortSignal,
+  ): Promise<ContextMetadataCacheEntry> {
+    const apiKey = await this.config.resolveApiKey(profile.provider, profile)
+    const models = await discoverModels({
+      baseURL,
+      api: 'openai-completions',
+      ...apiKey === undefined ? {} : { apiKey },
+      ...signal === undefined ? {} : { signal },
+    })
+    const contextWindows = new Map<string, number>()
+    for (const entry of models) {
+      if (entry.contextWindow !== undefined) contextWindows.set(entry.id, entry.contextWindow)
+    }
+    return { fetchedAt: Date.now(), contextWindows }
+  }
+
+  /** Warm context metadata for every model on the current route snapshot. */
+  async warmContextMetadata(): Promise<void> {
+    const snapshot = this.current()
+    await Promise.all([...snapshot.profiles.values()].flatMap(profile => (
+      profile.piProvider.getModels().map(model => this.contextWindowOf(profile, model))
+    )))
+  }
+
   override providerInfo(provider: string): LlmProviderInfo {
     // The configured name, not the route key: `displayName` exists so a
     // deployment can label a route, and a label only the configuration surface
@@ -253,29 +342,28 @@ export class PiAiAdapter extends LlmAdapter {
     })
   }
 
-  override resolveModel(
+  override async resolveModel(
     provider: string,
     model: string,
-    _signal?: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve().then(() => {
-      const snapshot = this.current()
-      const profile = this.profileOf(snapshot, provider)
-      const resolvedModel = this.modelOf(snapshot, provider, model)
-      const defaultLevel = describableReasoningLevel(resolvedModel, profile.reasoning)
-      // Only a cap the deployment configured is a request default; the
-      // catalog's `maxTokens` sizes the model and stops there.
-      const configuredMaxTokens = profile.configuredMaxTokens.get(model)
-      return {
-        provider,
-        id: model,
-        name: resolvedModel.name,
-        inputModalities: [...resolvedModel.input],
-        context: { contextWindow: resolvedModel.contextWindow },
-        ...configuredMaxTokens === undefined ? {} : { defaultMaxTokens: configuredMaxTokens },
-        ...reasoningInfo(resolvedModel, defaultLevel),
-      }
-    })
+    const snapshot = this.current()
+    const profile = this.profileOf(snapshot, provider)
+    const resolvedModel = this.modelOf(snapshot, provider, model)
+    const contextWindow = await this.contextWindowOf(profile, resolvedModel, signal)
+    const defaultLevel = describableReasoningLevel(resolvedModel, profile.reasoning)
+    // Only a cap the deployment configured is a request default; the
+    // catalog's `maxTokens` sizes the model and stops there.
+    const configuredMaxTokens = profile.configuredMaxTokens.get(model)
+    return {
+      provider,
+      id: model,
+      name: resolvedModel.name,
+      inputModalities: [...resolvedModel.input],
+      context: { contextWindow },
+      ...configuredMaxTokens === undefined ? {} : { defaultMaxTokens: configuredMaxTokens },
+      ...reasoningInfo(resolvedModel, defaultLevel),
+    }
   }
 
   async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -290,6 +378,7 @@ export class PiAiAdapter extends LlmAdapter {
     const snapshot = this.current()
     const profile = this.profileOf(snapshot, options.provider)
     const model = this.modelOf(snapshot, options.provider, options.model)
+    const contextWindow = await this.contextWindowOf(profile, model, options.signal)
     const reasoning = resolveReasoningLevel(
       model,
       options.reasoningEffort ?? profile.reasoning,
@@ -328,7 +417,7 @@ export class PiAiAdapter extends LlmAdapter {
         // Harness-owned and therefore win collisions.
         headers: requestHeaders(profile.headers),
       })
-      const iterator = toStreamChunks(events, model.contextWindow)[Symbol.asyncIterator]()
+      const iterator = toStreamChunks(events, contextWindow)[Symbol.asyncIterator]()
       let exhausted = false
       try {
         while (true) {

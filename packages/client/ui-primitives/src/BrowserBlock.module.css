@@ -1,0 +1,41 @@
+.block {
+  margin: 4px 0 4px 4px;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 12px;
+  background: var(--dsw-alias-markdown-code-block);
+}
+
+.chrome {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  color: var(--dsw-alias-label-tertiary);
+  font: var(--dsw-font-xs-13);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-caption);
+}
+
+.label {
+  margin-left: 4px;
+}
+
+.viewport {
+  max-height: 360px;
+  overflow: auto;
+  background: var(--dsw-alias-bg-base);
+}
+
+.image {
+  display: block;
+  width: 100%;
+  height: auto;
+}

@@ -3,7 +3,14 @@ import { EventEmitter, once } from 'node:events'
 import { createServer, request as httpRequest } from 'node:http'
 import { PassThrough, Readable } from 'node:stream'
 import { Context } from '@deepseek-ai/cordis'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+vi.mock('node:os', () => ({
+  networkInterfaces: () => ({
+    en0: [{ family: 'IPv4', internal: false, address: '192.168.1.5' }],
+    lo0: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }],
+  }),
+}))
 import type { AddressInfo } from 'node:net'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
@@ -16,8 +23,9 @@ import { API_PATH, apply, HOST_EVENTS_PATH, inject, MUX_EVENTS_PATH, type HostCo
 function fakeHttpServer(
   routes: WebRoute[],
   upgrades: WebUpgradeRoute[],
-): Pick<WebServer, 'register' | 'registerUpgrade' | 'tapIndex' | 'port'> {
+): Pick<WebServer, 'host' | 'register' | 'registerUpgrade' | 'tapIndex' | 'port'> {
   return {
+    host: '127.0.0.1',
     register(route) {
       if (routes.some(candidate => candidate.kind === route.kind && candidate.path === route.path)) {
         throw new Error(`duplicate route ${route.path}`)
@@ -161,18 +169,13 @@ describe('connection node half', () => {
     await dispose()
   })
 
-  it('pins privileged methods to loopback even for a declared trusted authority', async () => {
+  it('pins host-native and preset-management methods to loopback', async () => {
     const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'] })
-    // The privileged set: native dialogs plus the whole settings/credential
-    // configuration plane, reads included, plus the one method that makes the
-    // host fetch a caller-chosen URL. The same declared authority reaches
-    // ordinary reads (carrier-level 404 from the empty proxy proves the fence
-    // passed), but each privileged method stays loopback-only and 403s.
+    // A trusted LAN authority may use the full settings/credential plane, but
+    // native dialogs, settings document opening, and preset management remain
+    // local-only because they act on the host desktop or runtime roster.
     for (const method of [
-      'host.pickDirectory', 'host.openPath',
-      'settings.describe', 'settings.openDocument', 'settings.update', 'settings.replace', 'settings.mutate',
-      'credentials.describe', 'credentials.set', 'credentials.unset',
-      'llm.discoverModels',
+      'host.pickDirectory', 'host.openPath', 'settings.openDocument',
       // A composition names the plugins a session runs: reading one is
       // reconnaissance, and copy/remove/openDocument manage the roster and
       // drive the host desktop.
@@ -190,6 +193,40 @@ describe('connection node half', () => {
     await routes[0]!.handler(fakeRequest({ host: 'harness.example' }), read.response)
     expect(read.state.status).not.toBe(403)
     await dispose()
+  })
+
+  it('allows the full settings and credential plane for a declared trusted authority', async () => {
+    const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'] })
+    for (const method of [
+      'settings.describe', 'settings.update', 'settings.replace', 'settings.mutate',
+      'credentials.describe', 'credentials.set', 'credentials.unset',
+      'llm.providers', 'llm.models', 'llm.discoverModels',
+    ]) {
+      const response = fakeResponse()
+      await routes[0]!.handler(
+        fakeRequest({ host: 'harness.example' }, `${API_PATH}/${method}`),
+        response.response,
+      )
+      // The empty API proxy answers 404, which proves the request passed the
+      // trust fence and reached dispatch instead of being rejected with 403.
+      expect(response.state.status).toBe(404)
+    }
+    await dispose()
+  })
+
+  it('derives non-internal LAN IPv4 authorities for an all-interfaces Web bind', async () => {
+    const ctx = new Context()
+    const routes: WebRoute[] = []
+    const upgrades: WebUpgradeRoute[] = []
+    ctx.provide('webServer', { ...fakeHttpServer(routes, upgrades), host: '0.0.0.0' } as WebServer)
+    ctx.provide('apiProxy', {} as unknown as ApiProxy)
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.internal'] })
+    await fiber.await()
+    const route = routes[0]!
+    const lan = fakeResponse()
+    await route.handler(fakeRequest({ host: '192.168.1.5:3080' }), lan.response)
+    expect(lan.state.status).not.toBe(403)
+    await fiber.dispose()
   })
 
   it('passes loopback and declared-authority requests through to the bridge', async () => {
@@ -453,39 +490,31 @@ describe('connection node half over a real HTTP server', () => {
     })
   }
 
-  it('answers a declared LAN authority with 403 on every configuration method, over real HTTP', async () => {
+  it('allows full settings access from a declared LAN authority over real HTTP', async () => {
     // The fence's input is a real IncomingMessage parsed by Node from the
     // wire, not a hand-assembled object: the Host header a LAN browser sends
-    // is exactly what decides loopback-only here, so the boundary is asserted
-    // against the parse the server actually performs.
+    // is exactly what decides trust, so the boundary is asserted against the
+    // parse the server actually performs.
     const { routes, dispose } = await mounted({ trustedHosts: ['harness.example'] })
     const { port, close } = await serve(routes)
     try {
-      // Reads are as privileged as writes: describe returns the exposed
-      // configuration, and credentials.describe probes arbitrary env-var names.
       for (const method of [
-        'settings.describe', 'settings.openDocument', 'settings.update', 'settings.replace', 'settings.mutate',
+        'settings.describe', 'settings.update', 'settings.replace', 'settings.mutate',
         'credentials.describe', 'credentials.set', 'credentials.unset',
-        'host.pickDirectory', 'host.openPath',
-        // Carries a draft credential and turns the host into a fetcher for a
-        // URL the caller picked: an anonymous LAN caller must not reach it.
-        'llm.discoverModels',
+        'llm.providers', 'llm.models', 'llm.discoverModels',
+      ]) {
+        // 404 is the empty proxy's answer and proves the trusted LAN request
+        // passed the fence instead of being rejected with 403.
+        expect([method, await call(port, method, 'harness.example')]).toEqual([method, 404])
+      }
+      // Host-native actions and preset management remain loopback-only.
+      for (const method of [
+        'settings.openDocument', 'host.pickDirectory', 'host.openPath',
         'agentPreset.read', 'agentPreset.copy', 'agentPreset.openDocument', 'agentPreset.remove',
       ]) {
         expect([method, await call(port, method, 'harness.example')]).toEqual([method, 403])
       }
-      // The model catalog stays reachable for the same authority: a LAN
-      // client's model picker needs it, and it carries no key or endpoint
-      // state (404 is the empty proxy's carrier answer — the fence passed).
-      // `agentPreset.list` joins the model catalog for the same reason: ids and
-      // trust only, and a LAN client's preset picker needs it. `select` is
-      // reachable too: `session.create` already takes an `agentPreset`, and the
-      // deployment's own default already carries bash, so pinning the switch
-      // would be a fence beside an open gate.
-      for (const method of ['llm.providers', 'llm.models', 'agentPreset.list', 'agentPreset.select']) {
-        expect([method, await call(port, method, 'harness.example')]).toEqual([method, 404])
-      }
-      // Loopback reaches everything, configuration included.
+      // Loopback reaches the configuration plane too.
       expect(await call(port, 'settings.describe', `127.0.0.1:${String(port)}`)).toBe(404)
     } finally {
       await close()

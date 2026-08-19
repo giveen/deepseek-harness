@@ -7,6 +7,7 @@ export interface MockServer {
   requests: unknown[]
   headers: IncomingMessage['headers'][]
   readonly closedResponses: number
+  readonly metadataRequests: number
   responseClosed: Promise<void>
 }
 
@@ -32,13 +33,23 @@ export async function mockServer(script: {
   body?: string
   delayMs?: number
   headers?: Record<string, string>
-}[]): Promise<MockServer> {
+}[], models: unknown[] | (() => unknown[]) = []): Promise<MockServer> {
   const paths: string[] = []
   const requests: unknown[] = []
   const headers: IncomingMessage['headers'][] = []
   let closedResponses = 0
+  let metadataRequests = 0
   const responseClosed = Promise.withResolvers<undefined>()
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
+    // The adapter may refresh OpenAI-compatible context metadata before the
+    // generation request. Keep that probe out of generation scripts so tests
+    // can opt into metadata explicitly without changing every request fixture.
+    if (request.url?.endsWith('/models') === true) {
+      metadataRequests += 1
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(JSON.stringify({ data: typeof models === 'function' ? models() : models }))
+      return
+    }
     response.on('close', () => {
       closedResponses += 1
       responseClosed.resolve(undefined)
@@ -78,5 +89,6 @@ export async function mockServer(script: {
     headers,
     responseClosed: responseClosed.promise,
     get closedResponses() { return closedResponses },
+    get metadataRequests() { return metadataRequests },
   }
 }

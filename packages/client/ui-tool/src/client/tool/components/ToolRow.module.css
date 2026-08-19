@@ -264,7 +264,8 @@
 .diffBody,
 .readBody,
 .searchBody,
-.webBody {
+.webBody,
+.browserBody {
   margin: 4px 0 4px 4px;
 }
 

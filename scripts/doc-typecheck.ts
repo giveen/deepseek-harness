@@ -6,8 +6,9 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import ts from 'typescript'
 import { builtDeclarationPath } from './doc-typecheck-paths.ts'
 import { markdownFences } from './markdown.ts'
@@ -15,6 +16,8 @@ import { partitionPairedMarkdownDerivatives } from './paired-markdown-derivative
 import { isArchivedAgentNotePath } from './repo-files.ts'
 
 const root = resolve(import.meta.dirname, '..')
+const require = createRequire(import.meta.url)
+const typescriptCli = resolve(dirname(require.resolve('@typescript/native/package.json')), 'bin/tsc')
 
 /**
  * TypeScript-fence ownership. `check` compiles; `ignore` is an unchecked sketch
@@ -179,7 +182,7 @@ function compileBlocksStandalone(blocks: Block[]): string | undefined {
     }
     try {
       // Invoke tsc's JS entry through Node instead of a platform-specific shell shim.
-      execFileSync(process.execPath, ['node_modules/typescript/bin/tsc', '-b', join(tmp, 'tsconfig.json')], {
+      execFileSync(process.execPath, [typescriptCli, '-b', join(tmp, 'tsconfig.json')], {
         cwd: root,
         stdio: 'pipe',
       })

@@ -37,6 +37,7 @@ const SHIPPED_PRESET_ROOT = fileURLToPath(new URL('../config/agent-presets/', im
 import { DSH_LAUNCH_ENVIRONMENT_KEY, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
+import { acquireWebHostLock, type WebHostLock } from './web-host-lock.ts'
 
 const NAME = 'dsh'
 
@@ -225,6 +226,9 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
   })
 
   const rootConfig = join(composed.profile.dir, PROFILE_ROOT_FILENAME)
+  const webHostLock: WebHostLock | undefined = options.profile === 'web'
+    ? await acquireWebHostLock()
+    : undefined
   // Recomposition for the live user layers: bundle layers below, overlays
   // above, so a user edit can never displace them. Parsed app arguments are
   // not in here at all — they live in app-provided services that survive a
@@ -245,18 +249,27 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
   ])
   // Cloned for the same insert-aliasing reason as composeLive: the boot
   // application must not mutate the objects later reloads recompose from.
-  const ctx = await boot(NAME, rootConfig, structuredClone(allPatches(composed)), (hostCtx) => {
-    app.current = hostCtx
-    // Before any config-tree entry mounts, so plugins resolve all launch-time
-    // environment values from the same immutable provenance snapshot.
-    hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, options.environment)
-    // The command line and bounded exit request are launcher facts available
-    // to every app plugin that injects the argument snapshot.
-    provideCmdline(hostCtx, {
-      args: options.args,
-      exit: code => void shutdown.shutdown(code),
+  let ctx: Context
+  try {
+    ctx = await boot(NAME, rootConfig, structuredClone(allPatches(composed)), (hostCtx) => {
+      app.current = hostCtx
+      // Before any config-tree entry mounts, so plugins resolve all launch-time
+      // environment values from the same immutable provenance snapshot.
+      hostCtx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, options.environment)
+      // The command line and bounded exit request are launcher facts available
+      // to every app plugin that injects the argument snapshot.
+      provideCmdline(hostCtx, {
+        args: options.args,
+        exit: code => void shutdown.shutdown(code),
+      })
     })
-  })
+  } catch (error) {
+    await webHostLock?.release()
+    throw error
+  }
+  if (webHostLock !== undefined) {
+    ctx.effect(() => async () => { await webHostLock.release() }, 'dsh.web-host-lock')
+  }
   app.current = ctx
   // A surface can dispose the whole tree while boot or this post-boot watcher
   // setup is still in flight — a signal, or a fast one-shot's appExit. Loader
@@ -293,7 +306,12 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
         compose: composeLive,
       })
     } catch (error) {
-      suppressShutdownError(ctx, signalShutdown.signal, error)
+      try {
+        suppressShutdownError(ctx, signalShutdown.signal, error)
+      } catch (failure) {
+        await webHostLock?.release()
+        throw failure
+      }
     }
   }
   return { ctx, shutdown }

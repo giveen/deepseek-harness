@@ -433,6 +433,8 @@ export interface RouteCatalog {
    * picked, so only an explicit configuration lands here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /** Context capacities explicitly selected by this route, by model id. */
+  configuredContextWindows: ReadonlyMap<string, number>
 }
 
 /**
@@ -489,6 +491,7 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
     || request.compat?.supportsReasoningEffort !== undefined
   const seen = new Set<string>()
   const configuredMaxTokens = new Map<string, number>()
+  const configuredContextWindows = new Map<string, number>()
   const models = entries.map((entry) => {
     if (entry.id.length === 0) invalid(provider, 'has a model with an empty id')
     if (seen.has(entry.id)) invalid(provider, `lists model "${entry.id}" more than once`)
@@ -518,6 +521,7 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
     // Only a value the profile named is a deployment choice; the catalog's is
     // the model's capability and stays out of request defaults.
     if (entry.maxTokens !== undefined) configuredMaxTokens.set(entry.id, entry.maxTokens)
+    if (entry.contextWindow !== undefined) configuredContextWindows.set(entry.id, entry.contextWindow)
     return {
       // The installed entry lays the floor, and the fields below override it.
       // Enumerating instead would silently drop every `Model` field this
@@ -542,5 +546,5 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
     invalid(provider, 'sets compat reasoning switches, but no model on the route speaks openai-completions;'
       + ' thinkingFormat and supportsReasoningEffort exist only on that protocol')
   }
-  return { models, configuredMaxTokens }
+  return { models, configuredMaxTokens, configuredContextWindows }
 }

@@ -11,6 +11,7 @@ import { readToolview } from './tool/toolviews/read-row.tsx'
 import { searchToolview } from './tool/toolviews/search-row.tsx'
 import { todoToolview } from './tool/toolviews/todo-row.tsx'
 import { webToolview } from './tool/toolviews/web-row.tsx'
+import { browserToolview } from './tool/toolviews/browser-row.tsx'
 
 /** Required service: the slot registry that owns both Tool render seats. */
 export const inject = ['slots']
@@ -39,6 +40,7 @@ export function apply(ctx: ClientContext): void {
   ctx.plugin(fileMutationToolview)
   ctx.plugin(searchToolview)
   ctx.plugin(webToolview)
+  ctx.plugin(browserToolview)
   ctx.plugin(todoToolview)
   ctx.plugin(askQuestionToolview)
 }

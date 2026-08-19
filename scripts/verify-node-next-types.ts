@@ -7,10 +7,13 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { existsSync, globSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
 const root = resolve(import.meta.dirname, '..')
+const require = createRequire(import.meta.url)
+const typescriptCli = resolve(dirname(require.resolve('@typescript/native/package.json')), 'bin/tsc')
 
 interface ExportTarget {
   types?: string
@@ -147,7 +150,7 @@ try {
   // shim isn't spawnable on Windows (CVE-2024-27980) and the .cmd variant needs
   // shell:true, which space-joins args UNESCAPED (DEP0190) — a hazard for the
   // temp tsconfig path. The JS entry behaves identically on every platform.
-  execFileSync(process.execPath, ['node_modules/typescript/bin/tsc', '-p', resolve(tmp, 'tsconfig.json'), '--pretty', 'false'], {
+  execFileSync(process.execPath, [typescriptCli, '-p', resolve(tmp, 'tsconfig.json'), '--pretty', 'false'], {
     cwd: root,
     stdio: 'pipe',
   })

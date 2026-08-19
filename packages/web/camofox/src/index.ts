@@ -15,6 +15,7 @@ import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { JsonValue, ToolResult, ToolResultView } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-subprocess'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 
@@ -35,6 +36,8 @@ export const SERVER_STARTUP_TIMEOUT_MS = 30_000
 export const SERVER_KILL_GRACE_MS = 2_000
 /** Maximum retained output for the managed server's diagnostics. */
 const SERVER_OUTPUT_MAX_BYTES = 64_000
+/** Maximum PNG bytes retained in durable tool presentation metadata. */
+const MAX_SCREENSHOT_BYTES = 1_500_000
 
 /** Plugin configuration. */
 export interface Config {
@@ -57,6 +60,12 @@ interface CamofoxTab {
   tabId: string
   url: string
   title?: string
+  screenshot?: CamofoxScreenshot
+}
+
+interface CamofoxScreenshot {
+  data: string
+  mimeType: 'image/png'
 }
 
 interface CamofoxSnapshot {
@@ -65,24 +74,28 @@ interface CamofoxSnapshot {
   refsCount?: number
   truncated?: boolean
   totalChars?: number
+  screenshot?: CamofoxScreenshot
 }
 
 interface CamofoxClickResult {
   ok: boolean
   ref?: string
   selector?: string
+  screenshot?: CamofoxScreenshot
 }
 
 interface CamofoxTypeResult {
   ok: boolean
   ref?: string
   text: string
+  screenshot?: CamofoxScreenshot
 }
 
 interface CamofoxScrollResult {
   ok: boolean
   direction: 'up' | 'down'
   amount: number
+  screenshot?: CamofoxScreenshot
 }
 
 /** Whether a value is a JSON object returned by the camofox server. */
@@ -123,6 +136,23 @@ function optionalBoolean(value: Record<string, unknown>, key: string, path: stri
   if (field === undefined) return undefined
   if (typeof field !== 'boolean') throw new Error(`camofox ${path} returned an invalid ${key}`)
   return field
+}
+
+/** Validate the bounded PNG metadata returned by camofox for the chat panel. */
+function optionalScreenshot(value: Record<string, unknown>, key: string, path: string): CamofoxScreenshot | undefined {
+  const field = value[key]
+  if (field === undefined) return undefined
+  if (!isRecord(field)) throw new Error(`camofox ${path} returned an invalid ${key}`)
+  const data = requiredString(field, 'data', `${path}.${key}`)
+  const mimeType = requiredString(field, 'mimeType', `${path}.${key}`)
+  if (mimeType !== 'image/png') throw new Error(`camofox ${path} returned an unsupported screenshot MIME type`)
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data) || data.length % 4 !== 0) {
+    throw new Error(`camofox ${path} returned invalid screenshot data`)
+  }
+  if (Buffer.from(data, 'base64').byteLength > MAX_SCREENSHOT_BYTES) {
+    throw new Error(`camofox ${path} returned an oversized screenshot`)
+  }
+  return { data, mimeType: 'image/png' }
 }
 
 /** Read one required boolean field from a camofox response. */
@@ -298,12 +328,40 @@ class CamofoxClient {
     return this.read(response, path)
   }
 
-  private async get(path: string, signal: AbortSignal): Promise<Record<string, unknown>> {
+  private async get(path: string, signal: AbortSignal, query: Record<string, string> = {}): Promise<Record<string, unknown>> {
+    const url = new URL(`${this.baseUrl}${path}`)
+    url.searchParams.set('userId', this.userId)
+    url.searchParams.set('sessionKey', this.sessionKey)
+    for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value)
+    const response = await fetch(url, { signal })
+    return this.read(response, path)
+  }
+
+  /** Capture one viewport PNG without making visualization failures fail the browser action. */
+  private async screenshot(tabId: string, signal: AbortSignal): Promise<CamofoxScreenshot> {
+    const path = `/tabs/${tabPath(tabId)}/screenshot`
     const url = new URL(`${this.baseUrl}${path}`)
     url.searchParams.set('userId', this.userId)
     url.searchParams.set('sessionKey', this.sessionKey)
     const response = await fetch(url, { signal })
-    return this.read(response, path)
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      throw new Error(`camofox ${path} failed (${response.status})${text.length > 0 ? `: ${text.slice(0, 500)}` : ''}`)
+    }
+    const mimeType = response.headers.get('content-type')?.split(';', 1)[0]?.trim()
+    if (mimeType !== 'image/png') throw new Error(`camofox ${path} returned an unsupported screenshot MIME type`)
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (bytes.byteLength > MAX_SCREENSHOT_BYTES) throw new Error(`camofox ${path} returned an oversized screenshot`)
+    return { data: Buffer.from(bytes).toString('base64'), mimeType: 'image/png' }
+  }
+
+  /** Keep browser actions successful when the optional visual capture is unavailable. */
+  private async visual(tabId: string, signal: AbortSignal): Promise<{ screenshot?: CamofoxScreenshot }> {
+    try {
+      return { screenshot: await this.screenshot(tabId, signal) }
+    } catch {
+      return {}
+    }
   }
 
   private async read(response: Response, path: string): Promise<Record<string, unknown>> {
@@ -327,23 +385,31 @@ class CamofoxClient {
     const tabId = requiredString(value, 'tabId', 'POST /tabs')
     const returnedUrl = requiredString(value, 'url', 'POST /tabs')
     const title = optionalString(value, 'title', 'POST /tabs')
-    return title === undefined ? { tabId, url: returnedUrl } : { tabId, url: returnedUrl, title }
+    const visual = await this.visual(tabId, signal)
+    return {
+      tabId,
+      url: returnedUrl,
+      ...title === undefined ? {} : { title },
+      ...visual,
+    }
   }
 
   async snapshot(tabId: string, signal: AbortSignal): Promise<CamofoxSnapshot> {
     const path = `/tabs/${tabPath(tabId)}/snapshot`
-    const value = await this.get(path, signal)
+    const value = await this.get(path, signal, { includeScreenshot: 'true' })
     const snapshot = requiredString(value, 'snapshot', `GET ${path}`)
     const url = optionalString(value, 'url', `GET ${path}`)
     const refsCount = optionalNumber(value, 'refsCount', `GET ${path}`)
     const truncated = optionalBoolean(value, 'truncated', `GET ${path}`)
     const totalChars = optionalNumber(value, 'totalChars', `GET ${path}`)
+    const screenshot = optionalScreenshot(value, 'screenshot', `GET ${path}`)
     return {
       snapshot,
       ...url === undefined ? {} : { url },
       ...refsCount === undefined ? {} : { refsCount },
       ...truncated === undefined ? {} : { truncated },
       ...totalChars === undefined ? {} : { totalChars },
+      ...screenshot === undefined ? {} : { screenshot },
     }
   }
 
@@ -356,6 +422,7 @@ class CamofoxClient {
       ok: requiredBoolean(value, 'ok', `POST ${path}`),
       ...ref === undefined ? {} : { ref },
       ...selector === undefined ? {} : { selector },
+      ...await this.visual(tabId, signal),
     }
   }
 
@@ -367,6 +434,7 @@ class CamofoxClient {
       ok: requiredBoolean(value, 'ok', `POST ${path}`),
       ...returnedRef === undefined ? {} : { ref: returnedRef },
       text: requiredString(value, 'text', `POST ${path}`),
+      ...await this.visual(tabId, signal),
     }
   }
 
@@ -386,6 +454,7 @@ class CamofoxClient {
       ok: requiredBoolean(value, 'ok', `POST ${path}`),
       direction,
       amount: returnedAmount,
+      ...await this.visual(tabId, signal),
     }
   }
 }
@@ -432,6 +501,36 @@ function validateScrollAmount(amount: number | undefined): void {
   }
 }
 
+/** Extract one validated screenshot from a tool value or its durable metadata. */
+function screenshotFrom(value: unknown): CamofoxScreenshot | undefined {
+  if (!isRecord(value)) return undefined
+  return optionalScreenshot(value, 'screenshot', 'tool result')
+}
+
+/** Keep screenshot bytes in presentation metadata while leaving model text unchanged. */
+function browserPresentationMeta(_args: unknown, value: JsonValue): JsonValue {
+  const screenshot = screenshotFrom(value)
+  return screenshot === undefined ? null : {
+    screenshot: { data: screenshot.data, mimeType: screenshot.mimeType },
+  }
+}
+
+/** Project the metadata-backed screenshot into the browser-specific UI card. */
+function browserPresentResult(_args: unknown, result: ToolResult): ToolResultView | undefined {
+  const screenshot = screenshotFrom(result.meta)
+  return screenshot === undefined ? undefined : { card: 'browser', screenshot }
+}
+
+/** Optional screenshot property shared by all camofox output schemas. */
+const SCREENSHOT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    data: { type: 'string', required: true },
+    mimeType: { type: 'string', required: true },
+  },
+} as const
+
 /** Register the camofox tools and their model-facing operating guidance. */
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const endpoint = parseServerUrl(config.serverUrl ?? DEFAULT_SERVER_URL)
@@ -473,13 +572,16 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
           tabId: { type: 'string', required: true },
           url: { type: 'string', required: true },
           title: { type: 'string' },
+          screenshot: SCREENSHOT_SCHEMA,
         },
       },
       render: (_args, value) => [{
         type: 'text',
         text: `Opened tab ${value.tabId}${value.title ? ': ' + value.title : ''}\n${value.url}`,
       }],
+      presentationMeta: browserPresentationMeta,
     },
+    presentResult: browserPresentResult,
     timeoutMs: timeout,
     async execute(args, exec) {
       let url: URL
@@ -511,10 +613,13 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
           refsCount: { type: 'number' },
           truncated: { type: 'boolean' },
           totalChars: { type: 'number' },
+          screenshot: SCREENSHOT_SCHEMA,
         },
       },
       render: (_args, value) => [{ type: 'text', text: value.snapshot }],
+      presentationMeta: browserPresentationMeta,
     },
+    presentResult: browserPresentResult,
     timeoutMs: timeout,
     async execute(args, exec) {
       const agent = requireAgent(exec.agent)
@@ -538,13 +643,16 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
           ok: { type: 'boolean', required: true },
           ref: { type: 'string' },
           selector: { type: 'string' },
+          screenshot: SCREENSHOT_SCHEMA,
         },
       },
       render: (_args, value) => [{
         type: 'text',
         text: value.ok ? `Clicked ${value.ref ?? value.selector ?? 'element'}` : 'Click failed',
       }],
+      presentationMeta: browserPresentationMeta,
     },
+    presentResult: browserPresentResult,
     timeoutMs: timeout,
     async execute(args, exec) {
       const agent = requireAgent(exec.agent)
@@ -569,13 +677,16 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
           ok: { type: 'boolean', required: true },
           ref: { type: 'string' },
           text: { type: 'string', required: true },
+          screenshot: SCREENSHOT_SCHEMA,
         },
       },
       render: (_args, value) => [{
         type: 'text',
         text: value.ok ? `Typed "${value.text}" into ${value.ref ?? 'input'}` : 'Type failed',
       }],
+      presentationMeta: browserPresentationMeta,
     },
+    presentResult: browserPresentResult,
     timeoutMs: timeout,
     async execute(args, exec) {
       const agent = requireAgent(exec.agent)
@@ -610,13 +721,16 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
           ok: { type: 'boolean', required: true },
           direction: { type: 'string', required: true, enum: ['up', 'down'] },
           amount: { type: 'number', required: true },
+          screenshot: SCREENSHOT_SCHEMA,
         },
       },
       render: (_args, value) => [{
         type: 'text',
         text: value.ok ? `Scrolled ${value.direction} ${value.amount}px` : 'Scroll failed',
       }],
+      presentationMeta: browserPresentationMeta,
     },
+    presentResult: browserPresentResult,
     timeoutMs: timeout,
     async execute(args, exec) {
       validateScrollAmount(args.amount)

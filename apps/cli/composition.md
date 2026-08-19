@@ -154,6 +154,8 @@ flowchart LR
   cfg --> plugin_dsh_base_web_search_deepseek
   plugin_dsh_base_tool_web["tool-web<br/>@deepseek-ai/dsh-tool-web"]
   cfg --> plugin_dsh_base_tool_web
+  plugin_dsh_base_tool_camofox["tool-camofox<br/>@deepseek-ai/dsh-tool-camofox"]
+  cfg --> plugin_dsh_base_tool_camofox
   plugin_dsh_base_tools["tools<br/>@deepseek-ai/dsh-tools"]
   cfg --> plugin_dsh_base_tools
   plugin_dsh_base_system_prompt["system-prompt<br/>@deepseek-ai/dsh-system-prompt"]
@@ -241,6 +243,7 @@ flowchart LR
 | `web` | `@deepseek-ai/dsh-web` |
 | `web-search-deepseek` | `@deepseek-ai/dsh-web-search-deepseek` |
 | `tool-web` | `@deepseek-ai/dsh-tool-web` |
+| `tool-camofox` | `@deepseek-ai/dsh-tool-camofox` |
 | `tools` | `@deepseek-ai/dsh-tools` |
 | `system-prompt` | `@deepseek-ai/dsh-system-prompt` |
 | `agent-loop` | `@deepseek-ai/dsh-agent-loop` |

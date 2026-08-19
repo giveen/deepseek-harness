@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/web/camofox/README.md
-README.md: e038acc86fa0f7fa0e87e9883477c1063be93c52
-README.zh.md: 760ae5df410374fc9839a1928e75ab9193acfc72
+README.md: 78f1f7d492a5c9a047370ded0292eac8d6f47fc7
+README.zh.md: 924b3b908cf9f74c9af6b97123fb50e2a66d936f

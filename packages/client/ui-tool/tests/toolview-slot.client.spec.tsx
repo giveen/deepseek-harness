@@ -105,6 +105,21 @@ describe('keyed toolview hole through the real machinery', () => {
     await b.runtime.dispose()
   })
 
+  it('renders camofox screenshots in an open browser panel', async () => {
+    const b = await bench([{
+      ...toolResult(3, 'browser-1', 'browser_snapshot', '{"tabId":"tab-1"}'),
+      resultView: {
+        card: 'browser',
+        screenshot: { data: 'AQID', mimeType: 'image/png' },
+      },
+    }])
+    const view = b.runtime.renderRoot()
+    expect(view.container.querySelector('[data-browser="screenshot"]')).not.toBeNull()
+    expect(view.container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AQID')
+    expect(view.getAllByText('Browser').length).toBeGreaterThanOrEqual(1)
+    await b.runtime.dispose()
+  })
+
   it('renders top-level Cordis calls with lifecycle titles over the generic variants', async () => {
     const b = await bench([
       toolResult(3, 'cordis-1', 'cordis_runtime_inspect', '{"what":"api","name":"tools"}'),

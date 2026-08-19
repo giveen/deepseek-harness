@@ -166,10 +166,10 @@ export interface AgentPresetSettingsState {
   status: 'idle' | 'loading' | 'ready' | 'saving' | 'unavailable' | 'error'
   error: string | null
   /**
-   * Whether this browser may persist the choice at all. `settings.describe` is
-   * loopback-only and reports a read-only provider as `writable: false`; the
-   * row then shows the current default and disables the control rather than
-   * offering a write the gateway will refuse.
+   * Whether this browser may persist the choice at all. `settings.describe`
+   * follows the Host trust policy and reports a read-only provider as
+   * `writable: false`; the row then shows the current default and disables the
+   * control rather than offering a write the gateway will refuse.
    */
   writable: boolean
   currentValue: string
@@ -214,9 +214,10 @@ export class AgentPresetSettingsController {
     }
     try {
       // The roster says what may be chosen; `settings.describe` says whether
-      // this browser may write the choice down. A non-loopback browser reaches
-      // neither method, so a refused describe leaves the row read-only rather
-      // than offering a control whose write the Host would refuse.
+      // this browser may write the choice down. A page outside the Host trust
+      // policy receives the transport failure, so a refused describe leaves
+      // the row in an error state rather than offering a control whose write
+      // the Host would refuse.
       const described = await this.api.settings.describe({})
       this.set({
         status: 'ready',

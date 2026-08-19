@@ -2740,6 +2740,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export type Branded<B extends string> = string & {\n    readonly [BRAND]: B;\n};',
   },
   {
+    name: 'BrowserResultView',
+    declaration: 'export interface BrowserResultView {\n    card: \'browser\';\n    screenshot: BrowserScreenshot;\n}',
+  },
+  {
+    name: 'BrowserScreenshot',
+    declaration: 'export interface BrowserScreenshot {\n    data: string;\n    mimeType: string;\n}',
+  },
+  {
     name: 'CancelOptions',
     declaration: 'export interface CancelOptions {\n    keepInbox?: boolean | undefined;\n}',
   },
@@ -4441,7 +4449,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolResultView',
-    declaration: 'export type ToolResultView = GenericResultView | TerminalResultView | DiffResultView | SearchResultView | ReadResultView | WebResultView;',
+    declaration: 'export type ToolResultView = GenericResultView | TerminalResultView | DiffResultView | SearchResultView | ReadResultView | WebResultView | BrowserResultView;',
   },
   {
     name: 'ToolRunContext',

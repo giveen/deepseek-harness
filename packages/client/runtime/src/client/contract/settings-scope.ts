@@ -12,7 +12,7 @@ export interface SettingsScopeSnapshot<T> {
   /**
    * `loading` until the first accepted section, `ready` while one stands, and
    * `unavailable` when the namespace is not exposed to this client or the
-   * connection keeps preferences process-local (memory mode).
+   * caller intentionally keeps preferences process-local (memory mode).
    */
   status: 'loading' | 'ready' | 'unavailable'
   /** Last accepted schema-resolved section; undefined before the first acceptance. */
@@ -32,7 +32,7 @@ export interface SettingsScopeSnapshot<T> {
   revision: number | undefined
   /** Whether the Host document accepts writes; memory mode never does. */
   writable: boolean
-  /** `host` syncs with the Host document; `memory` keeps a remote browser process-local. */
+  /** `host` syncs with the Host document; `memory` keeps the scope process-local. */
   mode: 'host' | 'memory'
 }
 

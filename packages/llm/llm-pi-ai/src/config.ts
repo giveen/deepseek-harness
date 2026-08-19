@@ -37,6 +37,9 @@ export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 /** Context capacity assumed for a model neither configuration nor the catalog sizes. */
 export const DEFAULT_CONTEXT_WINDOW = 262_144
 
+/** Refresh interval for OpenAI-compatible context metadata, in milliseconds. */
+export const DEFAULT_CONTEXT_METADATA_REFRESH_MS = 300_000
+
 /** Output capability assumed for a model neither configuration nor the catalog sizes. */
 export const DEFAULT_MAX_TOKENS = 32_768
 
@@ -104,6 +107,12 @@ export interface PiAiProviderProfile {
    */
   defaultContextWindow?: number
   /**
+   * Refresh interval for context metadata from an OpenAI-compatible `/models`
+   * endpoint (default five minutes). A zero value refreshes on every model
+   * resolution; explicit model `contextWindow` values still win.
+   */
+  contextMetadataRefreshMs?: number
+  /**
    * Output capability for a model this route lists that neither the entry nor
    * the installed catalog sizes (default 32,768). This sizes the model; it
    * never becomes a per-request cap on its own.
@@ -151,6 +160,8 @@ export interface ResolvedPiAiProviderProfile
   apiKeyEnv?: CredentialRef
   /** Positive finite provider-idle interval after defaulting. */
   streamIdleTimeoutMs: number
+  /** Non-negative refresh interval for OpenAI-compatible context metadata. */
+  contextMetadataRefreshMs: number
   /** Immutable retry policy captured with this provider route. */
   retryPolicy: ResolvedRetryPolicy
   /**
@@ -166,6 +177,8 @@ export interface ResolvedPiAiProviderProfile
    * own, so a catalog capability must not appear here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /** Context capacities explicitly selected by this route, by model id. */
+  configuredContextWindows: ReadonlyMap<string, number>
 }
 
 /** Plugin configuration: the provider routes this instance owns. */
@@ -238,6 +251,7 @@ const profile = z.object({
   modelOverrides: z.dict(modelOverride),
   compat: compatProfile,
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
+  contextMetadataRefreshMs: z.number().step(1).min(0).max(MAX_TIMER_DELAY_MS).default(DEFAULT_CONTEXT_METADATA_REFRESH_MS),
   defaultMaxTokens: z.number().step(1).min(1).default(DEFAULT_MAX_TOKENS),
   defaultInput: z.array(z.union(MODALITIES)).default([...DEFAULT_INPUT]),
   headers: z.dict(z.string()),
@@ -316,6 +330,14 @@ export function resolveProfiles(
       throw new Error(`llm-pi-ai: provider "${provider}" has an empty displayName`)
     }
     const streamIdleTimeoutMs = source.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
+    const contextMetadataRefreshMs = source.contextMetadataRefreshMs ?? DEFAULT_CONTEXT_METADATA_REFRESH_MS
+    if (!Number.isSafeInteger(contextMetadataRefreshMs)
+      || contextMetadataRefreshMs < 0
+      || contextMetadataRefreshMs > MAX_TIMER_DELAY_MS) {
+      throw new Error(
+        `llm-pi-ai: provider "${provider}" contextMetadataRefreshMs must be a non-negative integer no greater than ${MAX_TIMER_DELAY_MS}`,
+      )
+    }
     if (!Number.isFinite(streamIdleTimeoutMs)
       || streamIdleTimeoutMs <= 0
       || streamIdleTimeoutMs > MAX_TIMER_DELAY_MS) {
@@ -354,10 +376,12 @@ export function resolveProfiles(
       displayName,
       ...apiKeyEnv === undefined ? {} : { apiKeyEnv: credentialRef(apiKeyEnv) },
       streamIdleTimeoutMs,
+      contextMetadataRefreshMs,
       retryPolicy: resolveRetryPolicy(retryPolicy, `llm-pi-ai: provider "${provider}" retryPolicy`),
       ...rest.headers === undefined ? {} : { headers: { ...rest.headers } },
       ...rest.thinkingBudgets === undefined ? {} : { thinkingBudgets: { ...rest.thinkingBudgets } },
       configuredMaxTokens: catalog.configuredMaxTokens,
+      configuredContextWindows: catalog.configuredContextWindows,
       piProvider: buildProvider({
         provider,
         displayName,

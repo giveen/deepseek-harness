@@ -142,6 +142,13 @@ describe('camofox tool registration and guidance', () => {
 describe('camofox wire and execution behavior', () => {
   it('isolates requests by agent and forwards the tool signal', async () => {
     const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(requestUrl(input)).pathname.endsWith('/screenshot')) {
+        expect(init?.signal).toBe(testToolSignal)
+        return new Response(Uint8Array.of(1, 2, 3), {
+          status: 200,
+          headers: { 'content-type': 'image/png' },
+        })
+      }
       expect(requestUrl(input)).toBe('http://127.0.0.1:9377/tabs')
       expect(init?.signal).toBe(testToolSignal)
       expect(requestBody(init)).toEqual({
@@ -155,7 +162,11 @@ describe('camofox wire and execution behavior', () => {
     const { fiber, call } = await mount()
     const out = await call('browser_navigate', { url: 'https://example.com' })
     expect(out.isError).toBe(false)
-    expect(out.value).toEqual({ tabId: 'tab-1', url: 'https://example.com/', title: 'Example' })
+    expect(out.value).toMatchObject({ tabId: 'tab-1', url: 'https://example.com/', title: 'Example' })
+    expect((out.value as { screenshot?: unknown }).screenshot).toEqual({
+      data: 'AQID',
+      mimeType: 'image/png',
+    })
     await fiber.dispose()
   })
 
@@ -173,6 +184,7 @@ describe('camofox wire and execution behavior', () => {
         truncated: false,
         totalChars: 18,
         nextOffset: 999,
+        screenshot: { data: 'AQID', mimeType: 'image/png' },
       })
     })
     vi.stubGlobal('fetch', fetch)
@@ -185,6 +197,7 @@ describe('camofox wire and execution behavior', () => {
       refsCount: 1,
       truncated: false,
       totalChars: 18,
+      screenshot: { data: 'AQID', mimeType: 'image/png' },
     })
     await fiber.dispose()
   })
@@ -200,7 +213,7 @@ describe('camofox wire and execution behavior', () => {
     const both = await call('browser_click', { tabId: 'tab-1', ref: 'e1', selector: 'button.submit' })
     expect(both.isError).toBe(true)
     expect(both.error?.message).toContain('exactly one')
-    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenCalledTimes(2)
 
     const malformed = await call('browser_click', { tabId: 'tab-1', ref: 'button-1' })
     expect(malformed.isError).toBe(true)
@@ -226,7 +239,7 @@ describe('camofox wire and execution behavior', () => {
     const invalid = await call('browser_scroll', { tabId: 'tab-1', direction: 'down', amount: 0 })
     expect(invalid.isError).toBe(true)
     expect(invalid.error?.message).toContain('positive safe integer')
-    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenCalledTimes(2)
 
     const badWire = await call('browser_type', { tabId: 'tab-1', ref: 'e1', text: 'x' })
     expect(badWire.isError).toBe(true)

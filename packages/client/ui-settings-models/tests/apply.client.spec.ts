@@ -9,12 +9,13 @@ import { apply, inject, refreshIfLoaded } from '@deepseek-ai/dsh-client-ui-setti
 import { ModelsSection } from '../src/client/ModelsSection.tsx'
 import { DeepSeekOnboardingDialog } from '../src/client/DeepSeekOnboardingDialog.tsx'
 import { WelcomeNotice } from '../src/client/WelcomeNotice.tsx'
+import { WELCOME_NOTICE_SETTINGS_NAMESPACE } from '../src/onboarding-copy.ts'
 
 // The service reads its initial locale from the browser; these specs assert
 // the shipped Chinese copy, so they state the browser they assume.
 usePinnedBrowserLanguages('zh-CN')
 
-async function bench(isLoopback = true) {
+async function bench(isLoopback = true, api: unknown = {}) {
   const ctx = new Context()
   await ctx.plugin(SlotRegistry).await()
   const locale = new LocaleRuntime(ctx)
@@ -24,7 +25,7 @@ async function bench(isLoopback = true) {
   new TestRemote(ctx)
   // The apply path only captures the wire face; no call leaves this fake
   // until a section actually loads.
-  ctx.provide('connection', { api: {}, isLoopback } as never)
+  ctx.provide('connection', { api, isLoopback } as never)
   return { ctx, slots: ctx.get('slots') as SlotRegistry, locale }
 }
 
@@ -143,8 +144,20 @@ describe('ui-settings-models apply', () => {
     expect(() => b.locale.register('settings.models', 'en', {})).not.toThrow()
   })
 
-  it('keeps remote-browser acknowledgement in process memory', async () => {
-    const b = await bench(false)
+  it('uses Host settings for remote-browser acknowledgement', async () => {
+    const b = await bench(false, {
+      settings: {
+        describe: () => Promise.resolve({
+          rpcId: 'welcome-remote' as never,
+          result: {
+            ok: true,
+            value: {
+              namespaces: [{ ns: WELCOME_NOTICE_SETTINGS_NAMESPACE, value: {} }],
+            },
+          },
+        }),
+      },
+    })
     declare(b.slots)
     await b.ctx.plugin({ inject: [...inject], apply }).await()
     const entry = b.slots.entries('settings.onboarding')

@@ -129,6 +129,8 @@ export type {
   SearchLineMatch,
   ReadResultView,
   WebResultView,
+  BrowserResultView,
+  BrowserScreenshot,
   WebSearchResultView,
   WebFetchResultView,
   WebSource,
