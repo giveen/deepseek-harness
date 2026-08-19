@@ -10,6 +10,7 @@
  * @module @deepseek-ai/dsh-web-app
  */
 
+import { spawn, type ChildProcess } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { networkInterfaces } from 'node:os'
 import { randomUUID } from 'node:crypto'
@@ -17,6 +18,8 @@ import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { addHarnessSourceSection } from '@deepseek-ai/dsh-app-boot'
+import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
+import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api'
 import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy/api'
 import * as FrontendStatic from '@deepseek-ai/dsh-host-frontend-static'
@@ -39,6 +42,8 @@ export const inject = ['webServer']
 
 /** Plugin config: composed deployment settings plus per-invocation command-line values. */
 export interface Config {
+  /** Permit default-browser handoff after the Loader tree settles; SSH suppresses it. */
+  openBrowser?: boolean
   /** Print the URL line on activation; a non-interactive layer can turn it off. */
   printUrl: boolean
   /**
@@ -58,6 +63,7 @@ export interface Config {
 const DEFAULT_LAN_INSTANCE_PROBE_TIMEOUT_MS = 2_000
 
 export const Config: z<Config> = z.object({
+  openBrowser: z.boolean().default(true),
   printUrl: z.boolean().default(true),
   surfaceContext: z.boolean().default(true),
   trustedHosts: z.array(String).default([]),
@@ -80,6 +86,78 @@ const DSH_WEB_URL = 'DSH_WEB_URL' as const
 const LOOPBACK_HOST = '127.0.0.1'
 /** The webserver schema's all-interfaces bind literal. */
 const ALL_INTERFACES_HOST = '0.0.0.0'
+
+/** Whether this process was launched through SSH, including a forwarded-port session. */
+function launchedThroughSsh(ctx: Context): boolean {
+  const environment = launchEnvironmentOf(ctx)
+  return ['SSH_CONNECTION', 'SSH_TTY'].some((name) => {
+    const value = environment.getFrom(name, ['process'])?.value
+    return value !== undefined && value !== ''
+  })
+}
+
+/** Small helper program that invokes the maintained platform opener in a scrubbed child. */
+const BROWSER_OPENER_PROGRAM = `
+try {
+  const { default: open } = await import('open')
+  const launcher = await open(process.argv[1])
+  if (process.platform === 'win32') {
+    const code = launcher.exitCode ?? await new Promise((resolve, reject) => {
+      const onError = (error) => { launcher.off('close', onClose); reject(error) }
+      const onClose = (value) => { launcher.off('error', onError); resolve(value) }
+      launcher.ref()
+      launcher.once('error', onError)
+      launcher.once('close', onClose)
+    })
+    if (code !== 0) throw new Error('browser operating-system launcher exited with code ' + String(code))
+  }
+  process.exitCode = 0
+} catch (error) {
+  console.error(error)
+  process.exitCode = 1
+}
+`
+
+/** Start the default-browser handoff without forwarding credentials or DSH state. */
+function spawnBrowserLauncher(url: string): ChildProcess {
+  return spawn(process.execPath, [
+    '--input-type=module',
+    '--eval', BROWSER_OPENER_PROGRAM,
+    '--', url,
+  ], {
+    env: scrubbedParentEnv(),
+    stdio: ['ignore', 'inherit', 'pipe'],
+  })
+}
+
+/** Hand one ready URL to the operating system's default browser. */
+async function openBrowser(url: string): Promise<void> {
+  const launcher = spawnBrowserLauncher(url)
+  let launcherStderr = ''
+  launcher.stderr?.setEncoding('utf8')
+  launcher.stderr?.on('data', (chunk: string) => { launcherStderr += chunk })
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error): void => {
+      launcher.off('close', onClose)
+      reject(error)
+    }
+    const onClose = (code: number | null): void => {
+      launcher.off('error', onError)
+      if (code !== 0) {
+        const firstLine = launcherStderr.trim().split(/\\r?\\n/u)[0]
+        const reason = firstLine === undefined || firstLine === ''
+          ? `browser launcher exited with code ${String(code)}`
+          : firstLine.replace(/^(?:[A-Za-z]*Error):\\s*/u, '')
+        reject(new Error(reason))
+        return
+      }
+      if (launcherStderr !== '') process.stderr.write(launcherStderr)
+      resolve()
+    }
+    launcher.once('error', onError)
+    launcher.once('close', onClose)
+  })
+}
 
 /**
  * Resolve one LAN-trust snapshot from the active server bind.
@@ -183,8 +261,11 @@ function resolveDistIndex(): string {
   }
 }
 
-/** Test hook: hosts with no built frontend dist substitute the resolver; production never touches this. */
-export const internals: { resolveDistIndex: () => string } = { resolveDistIndex }
+/** Test hooks for the built dist resolver and native browser handoff. */
+export const internals: {
+  resolveDistIndex: () => string
+  openBrowser: (url: string) => Promise<void>
+} = { resolveDistIndex, openBrowser }
 
 /**
  * Mount the Web runtime: dist serving, surface prompt, the bash runtime
@@ -194,6 +275,7 @@ export const internals: { resolveDistIndex: () => string } = { resolveDistIndex 
  */
 export function apply(ctx: Context, config: Config): void {
   const runtime = resolveLanTrust(ctx.webServer.host, config.trustedHosts)
+  const handoffBrowser = config.openBrowser !== false && !launchedThroughSsh(ctx)
   // The connection row is a sibling, not a child, so a service provided on
   // this row's context would be invisible to it. Publish the bind snapshot in
   // the shared root scope and attach that root disposer to this row's fiber;
@@ -221,17 +303,26 @@ export function apply(ctx: Context, config: Config): void {
       })
     })
   }
-  if (config.printUrl) {
-    // The URL line is a readiness signal: supervisors (and the keyless CLI
-    // smoke) RPC as soon as they observe it, so it must not print while
-    // sibling rows (the /api route owner) are still mounting. Await Loader
+  if (config.printUrl || handoffBrowser) {
+    // The URL line and browser handoff are readiness signals: supervisors and
+    // browsers must not observe a partially mounted Loader tree. Await Loader
     // settlement first; a hand-built tree without a Loader prints at once.
     const printUrl = (): void => {
       // Reuse the exact LAN snapshot provided to the /api trust fence.
       const lanCandidate = runtime.lanAddresses[0]
       const port = ctx.webServer.port
-      console.log(`dsh web: ${localWebUrl(ctx)}${lanCandidate === undefined ? '' : ` (LAN: http://${lanCandidate}:${String(port)})`}`)
+      const webUrl = localWebUrl(ctx)
+      if (config.printUrl) {
+        console.log(`dsh web: ${webUrl}${lanCandidate === undefined ? '' : ` (LAN: http://${lanCandidate}:${String(port)})`}`)
+      }
+      if (handoffBrowser) {
+        void internals.openBrowser(webUrl).catch((error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error)
+          console.error(`web-app: could not open the default browser because ${reason}; visit ${webUrl} manually`)
+        })
+      }
     }
+
     // This row's own activation can precede a sibling failure. The app owns
     // readiness by waiting for its Loader tree, or prints at once in a
     // hand-built context without Loader.

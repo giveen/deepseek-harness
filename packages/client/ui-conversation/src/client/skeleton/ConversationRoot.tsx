@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
 import type { WorkspaceId } from '@deepseek-ai/dsh-client-runtime/client'
+import { FishLogo } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ConversationSlotProps, InputZone } from '../contract/slots.ts'
 import { HeroGlow, HeroShell, WorkspaceChip, workspaceLabel } from './EmptyHero.tsx'
 import css from './ConversationRoot.module.css'
@@ -97,6 +98,11 @@ export function ConversationRoot({
           ? undefined
           : workspaceLabel(cwd)))
 
+  const heroBrandMark = renderSlot('conversation.hero.brand.mark', {
+    size: 34,
+    ...css.fish === undefined ? {} : { className: css.fish },
+  }, { fallback: <FishLogo size={34} className={css.fish} /> })
+
   const heroWorkspaceRow = (
     <div className={css.heroWorkspaceRow}>
       <WorkspaceChip
@@ -159,7 +165,7 @@ export function ConversationRoot({
   const composerBar = (
     <div className={clsx(css.composerStack, hero && css.composerHero)}>
       {hero && <HeroGlow className={css.heroGlow} />}
-      {hero && <HeroShell t={t} />}
+      {hero && <HeroShell t={t} brandMark={heroBrandMark} />}
       {hero && heroWorkspaceRow}
       {zone !== undefined && renderSlot('conversation.input.dock', zone)}
       {inputBar}

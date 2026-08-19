@@ -15,6 +15,10 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-client-runtime/client'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {
+    /** Official or deployment-provided mark in the collapsed sidebar brand row. */
+    'sidebar.brand.mark': { kind: 'single'; scope: 'root'; owner: SidebarBrandMarkOwnerProps }
+    /** Official or deployment-provided name in the expanded sidebar brand row. */
+    'sidebar.brand.name': { kind: 'single'; scope: 'root'; owner: SidebarBrandNameOwnerProps }
     /**
      * The workspace/session browsing region: section header, search, the
      * grouped/flat session list, and every workspace dialog. Declared by this
@@ -34,6 +38,22 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      */
     'sidebar.footer.action': { kind: 'list'; scope: 'root'; owner: SidebarFooterActionOwnerProps }
   }
+}
+
+/** Props supplied to a sidebar brand-mark occupant. */
+export interface SidebarBrandMarkOwnerProps {
+  /** Requested mark width in pixels. */
+  size: number
+  /** Optional shell placement class. */
+  className?: string
+}
+
+/** Props supplied to a sidebar brand-name occupant. */
+export interface SidebarBrandNameOwnerProps {
+  /** Requested name artwork height in pixels. */
+  size?: number
+  /** Optional shell placement class. */
+  className?: string
 }
 
 /**
@@ -85,5 +105,5 @@ export type SidebarRootInjected = {
  */
 export type SidebarRootComponentProps =
   PropsRuntime<'sidebar'>
-  & PropsRenderSlots<'sidebar.workspaces' | 'sidebar.settings' | 'sidebar.footer.action'>
+  & PropsRenderSlots<'sidebar.brand.mark' | 'sidebar.brand.name' | 'sidebar.workspaces' | 'sidebar.settings' | 'sidebar.footer.action'>
   & SidebarRootInjected & PropsLocale<'sidebar'>

@@ -137,7 +137,7 @@ export function SidebarRoot({
             aria-label={t('session.new.label')}
             onClick={() => { startSession() }}
           >
-            <BrandWordmark />
+            {renderSlot('sidebar.brand.name', { size: 24 }, { fallback: <BrandWordmark /> })}
           </button>
         )}
         {/* Rail resting state is the whale mark; hovering swaps in the panel
@@ -149,7 +149,10 @@ export function SidebarRoot({
             aria-label={collapsed ? t('toggle.open') : t('toggle.collapse')}
             onClick={() => { toggleSidebar() }}
           >
-            {!wide && <FishLogo className={css.railFish} size={24} />}
+            {!wide && renderSlot('sidebar.brand.mark', {
+              size: 24,
+              ...css.railFish === undefined ? {} : { className: css.railFish },
+            }, { fallback: <FishLogo className={css.railFish} size={24} /> })}
             {/* Rail icons render at 18 (figma rail spec); expanded keeps the glyph-native sizes. */}
             <IconPanelLeftOutline16 className={css.panelIcon} size={wide ? 16 : 18} />
           </button>

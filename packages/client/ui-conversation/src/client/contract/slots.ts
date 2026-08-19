@@ -130,6 +130,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * zero owner changes.
      */
     'conversation.composer': { kind: 'chain'; scope: 'session'; owner: ComposerChainProps }
+    /** Official or deployment-provided mark in the blank-session hero. */
+    'conversation.hero.brand.mark': { kind: 'single'; scope: 'root'; owner: HeroBrandMarkOwnerProps }
     /**
      * The hero-phase Workspace picker hole: rendered by ConversationRoot
      * while the session is blank (picking another workspace switches to that
@@ -238,6 +240,14 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     useInput: MaybeSnapshotSelectorHook<InputState>
     inputActions: InputActions | undefined
   }
+}
+
+/** Props supplied to a hero brand-mark occupant. */
+export interface HeroBrandMarkOwnerProps {
+  /** Requested mark width in pixels. */
+  size: number
+  /** Optional shell placement class. */
+  className?: string
 }
 
 /** Owner share of the hero agent-preset chip: the shell supplies nothing. */
@@ -573,6 +583,7 @@ export type ConversationSlotProps =
     | 'conversation.input.overlay'
     | 'conversation.input.dock' | 'conversation.composer.dock'
     | 'conversation.input.left' | 'conversation.input.right'
+    | 'conversation.hero.brand.mark'
     | 'conversation.hero.workspace'
     | 'conversation.hero.agentPreset'
   >

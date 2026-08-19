@@ -8,7 +8,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import type { WebServer } from '@deepseek-ai/dsh-host-webserver'
@@ -27,11 +27,17 @@ let dist: string | undefined
 afterEach(() => {
   vi.restoreAllMocks()
   internals.resolveDistIndex = originalResolve
+  internals.openBrowser = originalOpenBrowser
   if (dist !== undefined) rmSync(dist, { recursive: true, force: true })
   dist = undefined
 })
 
 const originalResolve = internals.resolveDistIndex
+const originalOpenBrowser = internals.openBrowser
+
+beforeEach(() => {
+  internals.openBrowser = async () => {}
+})
 
 /** Stage a dist fixture and point the bundle's resolver at it. */
 function stageDist(): string {
@@ -112,7 +118,7 @@ describe('web-app runtime glue', () => {
     const ctx = new Context()
     ctx.provide('webServer', fakeHttpServer().server)
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
-    apply(ctx, new Config({ printUrl: false, surfaceContext: true, trustedHosts: [] }))
+    apply(ctx, new Config({ openBrowser: false, printUrl: false, surfaceContext: true, trustedHosts: [] }))
     await ctx.plugin(SystemPrompt, { persona: '' })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(log).not.toHaveBeenCalled()
@@ -210,7 +216,7 @@ describe('web-app runtime glue', () => {
     const { server } = fakeHttpServer()
     Object.defineProperty(server, 'port', { get: () => undefined })
     ctx.provide('webServer', server)
-    apply(ctx, new Config({ printUrl: false, surfaceContext: true, trustedHosts: [] }))
+    apply(ctx, new Config({ openBrowser: false, printUrl: false, surfaceContext: true, trustedHosts: [] }))
     await ctx.plugin(SystemPrompt, { persona: '' })
     await new Promise(resolve => setTimeout(resolve, 0))
     await expect(ctx.systemPrompt.assemble()).rejects.toThrow('webServer service missing')
