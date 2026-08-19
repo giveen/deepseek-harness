@@ -114,6 +114,7 @@ describe('runnerCommand config', () => {
     const { sandbox } = await setup({
       runnerCommand: ['fake-runner', '--flag'],
       runnerFailureSignatures: ['fake-runner: profile rejected'],
+      deviceMounts: [],
     }, { probeBwrap, probeLandlock, probeSeatbelt })
     const confined = sandbox.confine(['bash', '-c', 'echo hi'], WW)
     expect(confined).toEqual({
@@ -162,7 +163,7 @@ describe('the platform chains', () => {
   it('linux probes bwrap first: a passing probe wraps with the bwrap dialect at full enforcement', async () => {
     const probeBwrap = vi.fn(() => true)
     const probeLandlock = vi.fn(() => 'full' as const)
-    const { sandbox } = await setup({}, { platform: 'linux', probeBwrap, probeLandlock })
+    const { sandbox } = await setup({ deviceMounts: [] }, { platform: 'linux', probeBwrap, probeLandlock })
     const confined = sandbox.confine(['true'], RO)
     expect(confined).toEqual({
       argv: ['bwrap', ...bwrapProfileArgs(RO), '--', 'true'],

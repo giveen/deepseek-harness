@@ -21,6 +21,12 @@ The Windows rung keeps one deterministic write SID and standing ACE per workspac
   name: '@deepseek-ai/dsh-sandbox-local'
 ```
 
+## Config
+
+- `deviceMounts` — device nodes or glob patterns to bind-mount into the bwrap sandbox. bwrap's `--dev /dev` replaces the host `/dev` with a minimal tree that hides GPU and render devices; these bind-mounts overlay the real host nodes on top. Default: GPU/render device patterns (`/dev/nvidia*`, `/dev/dri`, `/dev/nvidia-caps`, `/dev/render*`, `/dev/card*`). Set to `[]` to keep confined commands device-free. Patterns are expanded once at construction via `fs.globSync`. Landlock and Seatbelt already expose the host `/dev` unmodified, so this only affects the bwrap rung.
+
+
+
 Consumers: [`@deepseek-ai/dsh-bash-sandbox`](../../shell/bash-sandbox/); see [the acp-agent example](../../../examples/acp-agent/) for the runnable default composition.
 
 ## Model Experience
@@ -37,4 +43,5 @@ No direct invalidation; the named consumer owns any request-prefix changes.
 - **Landlock may be partial** — older supported kernel ABIs confine only the access classes they expose, reported as `enforcement: 'partial'` rather than overstated as full.
 - **Seatbelt depends on deprecated `sandbox-exec`** — macOS still ships it, but this provider cannot replace or probe that private policy engine if Apple removes it.
 - **Runner selection is cached for the provider lifetime** — installing, removing, or repairing a runner requires reloading the plugin before selection changes.
+- **GPU device visibility under bwrap requires `deviceMounts`** — bwrap's `--dev /dev` replaces the host device tree with a minimal devtmpfs; without the default `deviceMounts` patterns, GPU/render devices are invisible to confined commands on the bwrap rung. Landlock and Seatbelt expose the host `/dev` unmodified.
 - **`runnerCommand` is an operator assertion** — a configured custom runner skips functional probes and is assumed to implement the bwrap-compatible profile honestly; if it is itself a Bash script, its interpreter startup runs before that script applies confinement.

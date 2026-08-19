@@ -401,14 +401,22 @@ describe('per-call sandbox policy (the session and escalation carrier)', () => {
 
 describe('sudo credential piping', () => {
   it('pipes the sudo password to stdin when the command uses sudo and a credential is configured', async () => {
-    const { bash } = await setupWithSudoCredential('s3cret')
-    // Run a command that reads stdin and echoes it — sudo -S would read the password from stdin
-    const result = await bash.run(bash.resolve({
-      command: 'cat',
+    const { bash, ctx } = await setupWithSudoCredential('s3cret')
+    // Spy on the subprocess spawn to capture the stdin that gets written.
+    const spawnSpy = vi.spyOn(ctx.subprocess, 'spawn')
+    // Run a command containing sudo so the executor detects it and pipes
+    // the credential. The command itself can be anything — we only need to
+    // verify the stdin payload, not that sudo actually succeeds.
+    await bash.run(bash.resolve({
+      command: 'sudo echo test',
       sandboxPolicy: executionPolicy('danger-full-access'),
-    }))
-    // The password should be in stdout (cat echoes stdin)
-    expect(result.stdout.text).toContain('s3cret')
+    })).catch(() => { /* sudo may fail; we only care about stdin */ })
+    // The spawn should have been called with stdin data containing the password
+    expect(spawnSpy).toHaveBeenCalledOnce()
+    const spawnSpec = spawnSpy.mock.calls[0]?.[0]
+    const stdinData = (spawnSpec?.stdio?.stdin as { data?: string })?.data
+    expect(stdinData).toContain('s3cret')
+    spawnSpy.mockRestore()
   })
 
   it('does not pipe a password when the command does not use sudo', async () => {

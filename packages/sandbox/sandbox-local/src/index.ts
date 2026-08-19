@@ -21,7 +21,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, globSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -62,6 +62,18 @@ export interface Config {
   runnerFailureSignatures?: string[]
   /** Positive timeout for each functional probe; zero would mean unbounded to Node. */
   probeTimeoutMs?: number
+  /**
+   * Device nodes (or glob patterns) to bind-mount into the bwrap sandbox
+   * so confined commands can reach them. bwrap's `--dev /dev` replaces the
+   * host `/dev` with a minimal tree that hides GPU/render devices; these
+   * bind-mounts overlay the real host nodes on top. Landlock and Seatbelt
+   * already expose the host `/dev` unmodified, so this only affects the
+   * bwrap rung. Default: GPU/render device patterns (`/dev/nvidia*`,
+   * `/dev/dri`, `/dev/nvidia-caps`, `/dev/render*`, `/dev/card*`). Set to
+   * `[]` to keep confined commands device-free. Patterns are expanded once
+   * at construction via `fs.globSync`.
+   */
+  deviceMounts?: string[]
 }
 
 /** Probe whether `bwrap` can create the profile; the provider caches the bounded result. */
@@ -239,6 +251,14 @@ const RUNNER_FAILURE_RULES = {
   'windows-acl': [{ allowedExitCodes: [WINDOWS_ACL_RUNNER_FAILURE_EXIT], fatalSignatures: ['windows-acl-run: '] }],
 } as const satisfies Record<SelectedRunner['runner'], readonly RunnerFailureRule[]>
 
+const DEFAULT_DEVICE_MOUNTS: readonly string[] = [
+  '/dev/nvidia*',
+  '/dev/dri',
+  '/dev/nvidia-caps',
+  '/dev/render*',
+  '/dev/card*',
+]
+
 /**
  * Local process-sandbox provider. Registers as `ctx.sandbox`. Caches the
  * chain verdict and, on the windows-acl rung, the write grants
@@ -253,6 +273,7 @@ export class LocalSandboxProvider extends SandboxProvider {
     runnerCommand: z.array(z.string()).default([]),
     runnerFailureSignatures: z.array(z.string()).default([]),
     probeTimeoutMs: z.natural().default(5_000),
+    deviceMounts: z.array(z.string()).default([...DEFAULT_DEVICE_MOUNTS]),
   })
 
   /** Test hook (mirrors the bash executors' `internals`). */
@@ -261,6 +282,8 @@ export class LocalSandboxProvider extends SandboxProvider {
   private readonly runnerCommand: string[] | undefined
   private readonly configuredRunnerFailureSignatures: string[]
   private readonly probeTimeoutMs: number
+  /** Resolved device paths to bind-mount into bwrap sandboxes (expanded from configured patterns). */
+  private readonly resolvedDeviceMounts: readonly string[]
   /** Cached chain verdict; undefined until the first confined wrap needs it. */
   private selectedRunner: SelectedRunner | 'unavailable' | undefined
   /**
@@ -293,6 +316,11 @@ export class LocalSandboxProvider extends SandboxProvider {
     this.configuredRunnerFailureSignatures = runnerFailureSignatures
     this.probeTimeoutMs = config.probeTimeoutMs as number
     assertPositiveFinite('probeTimeoutMs', this.probeTimeoutMs)
+    // Expand device-mount glob patterns once at construction (hotplug
+    // changes are not observed -- matching the cached-runner-selection pattern).
+    this.resolvedDeviceMounts = (config.deviceMounts as string[]).flatMap((p) => {
+      try { return globSync(p) } catch { return [] }
+    })
     // The temp grants are revoked with the provider: a clean server
     // shutdown leaves no temp ACEs behind (workspace ACEs stand by design —
     // the reuse cache; an unclean shutdown leaves them for the next
@@ -316,7 +344,7 @@ export class LocalSandboxProvider extends SandboxProvider {
   confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv {
     if (this.runnerCommand !== undefined) {
       return {
-        argv: [...this.runnerCommand, ...bwrapProfileArgs(policy), '--', ...argv],
+        argv: [...this.runnerCommand, ...bwrapProfileArgs(policy, this.resolvedDeviceMounts), '--', ...argv],
         enforcement: 'full',
         denialSignatures: DENIAL_SIGNATURES.runnerCommand,
         runnerFailureRules: [{ fatalSignatures: this.configuredRunnerFailureSignatures }],
@@ -335,7 +363,7 @@ export class LocalSandboxProvider extends SandboxProvider {
   /** The selected rung's runner invocation (program + profile arguments) for one policy. */
   private runnerArgv(runner: SelectedRunner['runner'], policy: SandboxPolicy): string[] {
     switch (runner) {
-      case 'bwrap': return ['bwrap', ...bwrapProfileArgs(policy)]
+      case 'bwrap': return ['bwrap', ...bwrapProfileArgs(policy, this.resolvedDeviceMounts)]
       case 'landlock': return [this.landlockLauncher(), ...landlockProfileArgs(policy)]
       case 'seatbelt': return [this.seatbeltExec(), ...seatbeltProfileArgs(policy)]
       case 'windows-acl': return this.windowsAclRunnerArgv(policy)

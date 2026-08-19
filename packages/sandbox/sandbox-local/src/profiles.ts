@@ -11,10 +11,20 @@ import type { SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 /**
  * Build the bwrap profile arguments for one file-effect policy.
  * @param policy - file-effect policy to express as bwrap mounts.
+ * @param deviceMounts - device nodes (already-expanded paths) to bind-mount
+ *   on top of the minimal `--dev /dev` tree so confined commands can reach
+ *   them (GPU, render, etc.). Order matters: `--dev /dev` establishes the
+ *   fresh devtmpfs first, then each `--bind` overlays the real host node.
  * @returns profile arguments before the trailing separator and command argv.
  */
-export function bwrapProfileArgs(policy: SandboxPolicy): string[] {
+export function bwrapProfileArgs(policy: SandboxPolicy, deviceMounts: readonly string[] = []): string[] {
   const args = ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--die-with-parent']
+  // Bind-mount requested device nodes over the minimal devtmpfs that
+  // `--dev /dev` installs; without this, bwrap hides the entire host
+  // `/dev` tree (GPU/render devices included) from confined commands.
+  for (const device of deviceMounts) {
+    args.push('--bind', device, device)
+  }
   if (policy.mode === 'workspace-write') {
     args.push('--tmpfs', '/tmp')
     args.push('--bind', policy.workspaceRoot, policy.workspaceRoot)
