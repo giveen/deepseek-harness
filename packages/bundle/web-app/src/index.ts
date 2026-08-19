@@ -10,7 +10,13 @@
  * @module @deepseek-ai/dsh-web-app
  */
 
-import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http'
+import {
+  request as httpRequest,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type OutgoingHttpHeaders,
+  type ServerResponse,
+} from 'node:http'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { networkInterfaces } from 'node:os'
@@ -98,6 +104,30 @@ function rewriteCodebaseMemoryUiText(text: string): string {
   return text.replace(/(["'`(])\/(api|rpc|assets)(?=\/|["'`)])/g, '$1/codebase-memory/$2')
 }
 
+/**
+ * Adapt upstream response headers for the same-origin embedded panel.
+ *
+ * The upstream UI is normally opened as a top-level page and may send
+ * `X-Frame-Options` or `frame-ancestors` that forbid embedding. The harness
+ * already confines this route to its sandboxed same-origin iframe, so remove
+ * only those embedding directives and preserve every other CSP directive.
+ * @param headers - upstream response headers.
+ * @returns headers safe for the harness-owned embedded route.
+ */
+function embeddedCodebaseMemoryUiHeaders(headers: IncomingHttpHeaders): OutgoingHttpHeaders {
+  const adapted: OutgoingHttpHeaders = { ...headers }
+  delete adapted['x-frame-options']
+  const policy = adapted['content-security-policy']
+  if (typeof policy === 'string') {
+    const directives = policy.split(';')
+      .map(directive => directive.trim())
+      .filter(directive => directive.length > 0 && !directive.toLowerCase().startsWith('frame-ancestors'))
+    if (directives.length === 0) delete adapted['content-security-policy']
+    else adapted['content-security-policy'] = directives.join('; ')
+  }
+  return adapted
+}
+
 /** Proxy the upstream graph UI and its API while keeping the native server loopback-only. */
 function proxyCodebaseMemoryUi(req: IncomingMessage, res: ServerResponse): void {
   let requestUrl: URL
@@ -125,7 +155,7 @@ function proxyCodebaseMemoryUi(req: IncomingMessage, res: ServerResponse): void 
     const contentType = response.headers['content-type'] ?? ''
     const rewrite = /(?:text\/html|javascript|text\/css)/i.test(contentType)
     if (!rewrite || req.method === 'HEAD') {
-      res.writeHead(response.statusCode ?? 502, response.headers)
+      res.writeHead(response.statusCode ?? 502, embeddedCodebaseMemoryUiHeaders(response.headers))
       response.pipe(res)
       return
     }
@@ -134,7 +164,7 @@ function proxyCodebaseMemoryUi(req: IncomingMessage, res: ServerResponse): void 
     response.on('data', (chunk: string) => { chunks.push(chunk) })
     response.on('end', () => {
       const body = Buffer.from(rewriteCodebaseMemoryUiText(chunks.join('')))
-      const headers = { ...response.headers }
+      const headers = embeddedCodebaseMemoryUiHeaders(response.headers)
       delete headers['content-length']
       delete headers.etag
       headers['content-length'] = String(body.byteLength)
@@ -340,11 +370,13 @@ export const internals: {
   openBrowser: (url: string) => Promise<void>
   browserOpenerModulePath: string
   rewriteCodebaseMemoryUiText: (text: string) => string
+  embeddedCodebaseMemoryUiHeaders: (headers: IncomingHttpHeaders) => OutgoingHttpHeaders
 } = {
   resolveDistIndex,
   openBrowser,
   browserOpenerModulePath: OPEN_MODULE_PATH,
   rewriteCodebaseMemoryUiText,
+  embeddedCodebaseMemoryUiHeaders,
 }
 
 /**

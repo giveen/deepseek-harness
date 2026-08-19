@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-19-codebase-memory-ui-iframe-headers.md
+2026-08-19-codebase-memory-ui-iframe-headers.md: 32a0d70a1b504b01674699134718db016311d075
+2026-08-19-codebase-memory-ui-iframe-headers.zh.md: 69b5d0490237abe15922d9a294cc03d807580dc1

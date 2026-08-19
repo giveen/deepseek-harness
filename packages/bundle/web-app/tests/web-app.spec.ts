@@ -86,6 +86,17 @@ describe('web-app runtime glue', () => {
       .toBe('fetch("/codebase-memory/rpc"); fetch("/codebase-memory/api/layout"); import("/codebase-memory/assets/app.js")')
   })
 
+  it('removes upstream frame blockers while preserving other CSP directives', () => {
+    const headers = internals.embeddedCodebaseMemoryUiHeaders({
+      'x-frame-options': 'DENY',
+      'content-security-policy': "default-src 'self'; frame-ancestors 'none'; script-src 'self'",
+      'content-type': 'text/html',
+    })
+    expect(headers['x-frame-options']).toBeUndefined()
+    expect(headers['content-security-policy']).toBe("default-src 'self'; script-src 'self'")
+    expect(headers['content-type']).toBe('text/html')
+  })
+
   it('mounts dist serving, prompt section, bash variables, and prints the URL with the LAN snapshot', async () => {
     stageDist()
     const ctx = new Context()

@@ -16,7 +16,7 @@
 
 Web 会话视图新增 **Codebase Memory** 标签，与 Chat、Trajectory、Files 和 Commits 并列。它通过 `/codebase-memory/` 嵌入上游图形界面，保留上游的项目、图、统计和控制标签。harness 代理会重写上游界面的绝对资源和 API 路径，避免与 harness 的 `/api` 路由冲突。
 
-该面板与 harness 同源，并限制 iframe 仅使用脚本和同源访问。如果原生界面不可用，面板会显示上游的失败状态，而 Chat、Trajectory、Files 和 Commits 仍可使用。
+该面板与 harness 同源，并限制 iframe 仅使用脚本和同源访问。代理只移除会拒绝嵌入路由的上游 `X-Frame-Options` 和 CSP `frame-ancestors` 指令，同时保留其余响应策略。如果原生界面不可用，面板会显示上游的失败状态，而 Chat、Trajectory、Files 和 Commits 仍可使用。
 
 ## 配置
 

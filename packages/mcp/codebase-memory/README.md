@@ -18,7 +18,7 @@ This is local-only code intelligence. It is evidence for narrowing a search, not
 
 The Web conversation view adds a **Codebase Memory** tab beside Chat, Trajectory, Files, and Commits. It embeds the upstream graph UI through `/codebase-memory/`, preserving the UI's project, graph, statistics, and control tabs. The harness proxy also rewrites the upstream UI's absolute asset and API paths so it cannot collide with the harness `/api` routes.
 
-The panel is same-origin with the harness and is sandboxed to scripts and same-origin access. If the native UI is unavailable, the panel displays the upstream failure state while ordinary Chat, Trajectory, Files, and Commits remain usable.
+The panel is same-origin with the harness and is sandboxed to scripts and same-origin access. The proxy removes only upstream `X-Frame-Options` and CSP `frame-ancestors` directives that would reject the embedded route, while preserving the remaining response policy. If the native UI is unavailable, the panel displays the upstream failure state while ordinary Chat, Trajectory, Files, and Commits remain usable.
 
 ## Configuration
 
