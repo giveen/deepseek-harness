@@ -2,13 +2,13 @@
 
 [English](README.md) | 中文
 
-SQLite 持久会话存储后端：第二个 `SessionPersistence` 提供方（见[会话持久化](../../../.agents/notes/implemented/architecture/2026-06-14-session-persistence.md)），满足与 `dsh-session-persistence-jsonl` 相同的约定（仅追加、连续 seq、延迟实体化、在 load 时关闭中断轮次），但用 `node:sqlite` 行而非文件字节表达。
+可选启用的 SQLite `SessionPersistence` 提供方：第二个提供方（见[会话持久化](../../../.agents/notes/implemented/architecture/2026-06-14-session-persistence.md)），使用 schema-17 物理行并满足与 `dsh-session-persistence-jsonl` 相同的约定。符合条件的 assistant 分片连续段会被打包，大型 payload 会选择性使用 Zstandard 压缩，来源数组使用 delta varint 编码；所有读取都会恢复完全一致的逻辑 `SessionEvent[]`。
 
 `locate(meta)` 返回 `undefined`：所有会话共享一个数据库，因此不存在真实、独立的逐会话 transcript（文本记录）路径。
 
 ## 存储模型
 
-每个 `SessionEvent` 1:1 映射到 `events` 表中的一行 `(session_id, seq, type, time, data, source_event_seqs, surface_op)`；`data` 是作为 JSON 文本的事件 payload，因此行结构就是原始事件本身（包括 `assistant/chunk`，保持 `seq` 连续）。两个 `TEXT` 列 `source_event_seqs` 和 `surface_op` 可为空，存储事件可选接口元数据字段（见[会话接口](../../../.agents/notes/implemented/architecture/2026-06-18-session-surface.md)）。日志外元数据（`SessionHeader`）、每实体化 incarnation id 和每日志单调修订位于 `sessions` 行；`createdAt` 是存储在 strict `INTEGER` 列中的非负安全整数。单例状态行携带不可变存储 id。`sessions` 行只由第一次 `append` 写入，其存在性是延迟实体化信号（`list` 精确报告有行的会话）。删除标记存放在 `session_deletion_marks` 中；它是持久化维护状态而不是会话事件，删除会话时由外键级联一并移除。
+Schema 17 保留 `events(session_id, seq)` 物理索引。标量行存储一个逻辑事件。连续且属于同一块的文本、推理和工具调用 delta 使用物理标签 `text-chunks`、`reasoning-chunks` 和 `tool-call-chunks`；打包行存储首个序列／时间与共享 payload，最多表示 1,024 个事件及 1 MiB 未压缩 UTF-8 数据。打包行使用 `ignorable=0` 作为判别值并保持 surface 字段为空；标量行仅在逻辑事件可忽略时使用 `ignorable=1`，因此未来的可忽略事件可以安全复用存储标签名称。未知字段、surface 元数据、缺口、不兼容的分片身份和不安全时间戳仍保持标量。可为空的 `surface_op` 存储可选接口元数据（见[会话接口](../../../.agents/notes/implemented/architecture/2026-06-18-session-surface.md)）；`source_event_seqs` 作为完整的 delta 编码 BLOB 存储。读取会在返回事件前展开物理行。日志外元数据（`SessionHeader`）、每实体化 incarnation id 和每日志单调修订位于 `sessions` 行；`createdAt` 是存储在 strict `INTEGER` 列中的非负安全整数。单例状态行携带不可变存储 id。`sessions` 行只由第一次 `append` 写入，其存在性是延迟实体化信号（`list` 精确报告有行的会话）。删除标记存放在 `session_deletion_marks` 中；它是持久化维护状态而不是会话事件，删除会话时由外键级联一并移除。
 
 仓库支持的 Node 范围可不加 flag 使用 `node:sqlite`。数据库启用外键，在锁竞争时最多等待配置的 `busyTimeoutMs`（默认 `5000` ms），并使用已配置 journal mode（默认 `wal`；WAL 共享内存文件不适用时使用 rollback mode）。连接默认使用 `synchronous=FULL`；`synchronous=NORMAL` 是部署明确选择的吞吐／耐久性取舍。SQLite 的 WAL 自动 checkpoint 阈值通过 `walAutocheckpointPages` 显式配置（默认 `1000` 页）；设为 `0` 会关闭自动 checkpoint，交由运维维护计划负责。`PRAGMA application_id` 标识规范持久化数据库，`PRAGMA user_version` 存储布局版本。新数据库必须没有 application identity 或用户定义 schema 对象；初始化在一个事务中创建全部表并盖上两个 pragma。非 pristine 无版本数据库、外部 application identity 和所有非当前版本在 journal-mode 变更前均会被拒绝，因为该未发布格式无迁移。
 
@@ -39,7 +39,7 @@ interface Config {
 
 ## 写入路径
 
-与 JSONL 后端一样，插件将每个冻结的 `session/event` 复制到对应活动会话的 controller 中，每个活动会话各有一个 controller。第一个待处理事件会开启配置的固定批处理窗口，后续事件会加入但不会重置截止时间。窗口到期后会启动一个事务；该次写入期间接纳的事件会形成另一个独立有界的后续批次。`session/flush` 会取消等待并排空当前与待处理批次。Controller 会持久化一次 fork 种子，并保留写入游标，使恢复操作绝不重新 append 已存储事件；它还会在 apply 时为活动会话设置初始状态，因为 HMR（热模块替换）不回放 `session/created`。dispose（资源释放）会在关闭数据库前排空每个保留的 controller。每个事件仍各占一行 SQLite 记录；批处理只把更多 INSERT 归入同一个事务和同一次修订版本递增。
+与 JSONL 后端一样，插件将每个冻结的 `session/event` 复制到对应活动会话的 controller 中。第一个待处理事件会开启配置的固定批处理窗口，后续事件会加入但不会重置截止时间。每个持久批次运行 `BEGIN IMMEDIATE`、验证物理尾部，只打包新追加的兼容事件，插入物理记录并只递增一次 revision；不会改写既有行。`session/flush` 会取消等待并排空当前与待处理批次。Controller 会持久化一次 fork 种子，并保留写入游标，使恢复操作绝不重新 append 已存储事件；它还会在 apply 时为活动会话设置初始状态，因为 HMR（热模块替换）不回放 `session/created`。dispose（资源释放）会在关闭数据库前排空每个保留的 controller。
 
 ## 诊断与备份
 
@@ -66,6 +66,6 @@ SQLite 存储不修改当前请求前缀。只有重建历史、当前 envelope 
 - **`DatabaseSync` 是同步的**：每个 append 事务和诊断语句在整个期间阻塞事件循环；对本地存储可接受，对繁忙多会话服务器是吞吐上限。
 - **锁处理是有界的，不是无限等待**：连接最多等待 `busyTimeoutMs`，之后失败；调用方仍需在合适的生命周期边界暴露持久化失败并重试，而不是隐藏无限争用。
 - **默认 `synchronous=FULL` 并不保证整个主机的断电安全**：文件系统、设备和操作系统故障语义不属于进程约定。只有部署明确选择时才使用 `NORMAL`。
-- **只有 pristine 新数据库或当前自有 `SCHEMA_VERSION` 才能打开**：无版本 schema 对象、外部 application identity 和所有其他 schema 版本被拒绝，而不是迁移（未发布软件，无持久用户数据需要保留）。
+- **只有 pristine 新数据库或当前自有 schema-17 `SCHEMA_VERSION` 才能打开**：无版本 schema 对象、外部 application identity 和所有其他 schema 版本被拒绝，而不是迁移（未发布软件，无持久用户数据需要保留）。
 - **标记与清扫不会收集所有依赖工件**：SQLite 提供方会保护活跃会话及未标记 child 引用，然后只在会话行、删除标记和事件行之间执行级联删除。查询索引、附件、导出物和其他 projection 仍需要各自的对账或所有权钩子，之后才能安全收集。
 - **TODO：** 该后端直接调用 `node:sqlite`。如果采用 Cordis 数据库服务（`cordis/db` / `@cordisjs` SQL driver 插件），应改为通过该服务路由，而不在此直接持有 `DatabaseSync`；约定接口（`SessionPersistence`）不会变，只更换存储驱动。

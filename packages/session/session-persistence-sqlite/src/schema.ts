@@ -1,7 +1,7 @@
 /**
  * Schema + load-time helpers for the SQLite session-persistence backend: the
- * DDL (a store-identity row, `sessions` metadata, and a 1:1 `events` row per
- * `SessionEvent`), the database open/configure step, and the last-`turn/end`
+ * DDL (a store-identity row, `sessions` metadata, and scalar or packed
+ * `events` rows), the database open/configure step, and the last-`turn/end`
  * cut that gives the SQLite backend the SAME crash-tail-on-load semantics as
  * the JSONL backend.
  *
@@ -10,14 +10,15 @@
 
 import { randomUUID } from 'node:crypto'
 import { backup as sqliteBackup, DatabaseSync } from 'node:sqlite'
-import type { SessionEvent, SessionId, SessionHeader, SurfaceOp } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SurfaceEventType, SessionId, SessionHeader } from '@deepseek-ai/dsh-session'
+import { decodeRow, scanRows as scanPhysicalRows } from './compression.ts'
 
 /**
  * The on-disk schema version. Bumped only on a breaking change to the table
  * layout; orthogonal to a session's own `version` (which versions the EVENT
  * vocabulary, stored per session in the `sessions` row).
  */
-export const SCHEMA_VERSION = 16
+export const SCHEMA_VERSION = 17
 
 /** SQLite application id protecting unrelated databases from persistence writes. */
 export const SESSION_PERSISTENCE_SQLITE_APPLICATION_ID = 0x44534850
@@ -57,9 +58,10 @@ export interface EventRow {
   seq: number
   type: string
   time: number
-  data: string
-  /** JSON-encoded `number[]` — the event's sourceEventSeqs, or null. */
-  source_event_seqs: string | null
+  /** JSON text or a Zstandard-compressed BLOB. */
+  data: string | Uint8Array
+  /** Delta-encoded provenance BLOB, or null. */
+  source_event_seqs: Uint8Array | string | null
   /** JSON-encoded `SurfaceOp` — how the event entered the surface, or null. */
   surface_op: string | null
   /** `1` iff the event carries the envelope's `ignorable: true` marker, else null. */
@@ -174,6 +176,8 @@ function configureDatabase(
   walAutocheckpointPages: number,
 ): void {
   db.exec('PRAGMA foreign_keys = ON')
+  db.exec('PRAGMA trusted_schema = OFF')
+  db.exec('PRAGMA mmap_size = 0')
   let began = false
   try {
     db.exec('BEGIN IMMEDIATE')
@@ -227,13 +231,14 @@ function configureDatabase(
         seq               INTEGER NOT NULL,
         type              TEXT NOT NULL,
         time              INTEGER NOT NULL,
-        data              TEXT NOT NULL,
-        source_event_seqs TEXT,
+        data              ANY NOT NULL,
+        source_event_seqs ANY,
         surface_op        TEXT,
-        ignorable         INTEGER,
+        ignorable         INTEGER CHECK (ignorable IS NULL OR ignorable IN (0, 1)),
         PRIMARY KEY (session_id, seq)
       ) STRICT
     `)
+    validateOwnedSchema(db, path)
     db.prepare(
       'INSERT OR IGNORE INTO persistence_state (singleton, store_id) VALUES (1, ?)',
     ).run(randomUUID())
@@ -260,6 +265,57 @@ function configureDatabase(
   db.exec(`PRAGMA journal_mode = ${journalMode.toUpperCase()}`)
   db.exec(`PRAGMA synchronous = ${synchronous.toUpperCase()}`)
   db.exec(`PRAGMA wal_autocheckpoint = ${walAutocheckpointPages}`)
+  const trustedSchema = (db.prepare('PRAGMA trusted_schema').get() as { trusted_schema: number }).trusted_schema
+  const mmapRow = path === ':memory:' ? undefined : db.prepare('PRAGMA mmap_size').get() as { mmap_size: number } | undefined
+  const mmapSize = mmapRow?.mmap_size ?? 0
+  const synchronousValue = (db.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous
+  if (trustedSchema !== 0) throw new Error(`session database at "${path}" retained trusted_schema=${trustedSchema}, expected 0`)
+  if (mmapSize !== 0) throw new Error(`session database at "${path}" retained mmap_size=${mmapSize}, expected 0`)
+  const expectedSynchronous = synchronous === 'full' ? 2 : 1
+  if (synchronousValue !== expectedSynchronous) throw new Error(`session database at "${path}" retained synchronous=${synchronousValue}, expected ${expectedSynchronous}`)
+}
+
+/**
+ * Revalidate application ownership and exact table columns inside a mutation transaction.
+ * @param db - open SQLite database with the caller's mutation transaction active.
+ * @param path - database path used in ownership diagnostics.
+ */
+export function validateDatabaseSchema(db: DatabaseSync, path: string): void {
+  const { user_version: version } = db.prepare('PRAGMA user_version').get() as { user_version: number }
+  const { application_id: applicationId } = db.prepare('PRAGMA application_id').get() as { application_id: number }
+  if (applicationId !== SESSION_PERSISTENCE_SQLITE_APPLICATION_ID) {
+    throw new Error(`session database application id changed before mutation (expected ${SESSION_PERSISTENCE_SQLITE_APPLICATION_ID}, got ${applicationId})`)
+  }
+  if (version !== SCHEMA_VERSION) {
+    throw new Error(`session database schema changed before mutation (expected ${SCHEMA_VERSION}, got ${version})`)
+  }
+  validateOwnedSchema(db, path)
+}
+
+function validateOwnedSchema(db: DatabaseSync, path: string): void {
+  const objects = db.prepare("SELECT type, name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name")
+    .all() as Array<{ type: string; name: string }>
+  const expected = [
+    { type: 'table', name: 'events' },
+    { type: 'table', name: 'persistence_state' },
+    { type: 'table', name: 'session_deletion_marks' },
+    { type: 'table', name: 'sessions' },
+  ]
+  if (JSON.stringify(objects) !== JSON.stringify(expected)) {
+    throw new Error(`session database at "${path}" does not contain the required schema objects`)
+  }
+  const columns: Record<string, readonly string[]> = {
+    persistence_state: ['singleton', 'store_id'],
+    sessions: ['id', 'version', 'created_at', 'cwd', 'parent_session', 'seed_length', 'origin', 'delegation_depth', 'agent_preset', 'incarnation', 'revision'],
+    session_deletion_marks: ['session_id', 'marked_at', 'reason'],
+    events: ['session_id', 'seq', 'type', 'time', 'data', 'source_event_seqs', 'surface_op', 'ignorable'],
+  }
+  for (const [table, expectedColumns] of Object.entries(columns)) {
+    const actual = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(column => column.name)
+    if (JSON.stringify(actual) !== JSON.stringify(expectedColumns)) {
+      throw new Error(`session database at "${path}" does not contain the required schema columns for ${table}`)
+    }
+  }
 }
 
 function assertOpenOptions(
@@ -347,27 +403,28 @@ export function rowToMeta(row: SessionRow): SessionHeader {
 }
 
 /**
- * Reconstruct a {@link SessionEvent} from an `events` row (parses `data`).
- * @param row - the `events` table row; `data` and the surface columns hold JSON text.
- * @returns the reconstructed event; throws when a JSON column fails to parse
- *   ({@link scanRows} treats that as a hole, not corruption, in the tail).
+ * Reconstruct one logical {@link SessionEvent} from an `events` row. Packed
+ * rows are rejected here because callers that need physical expansion use
+ * {@link decodeRow} through {@link scanRows}.
+ * @param row - the `events` table row; scalar data and surface columns hold JSON text.
+ * @returns the reconstructed event; throws when a row is packed or a JSON column
+ *   fails to parse ({@link scanRows} treats that as a hole in the tail).
  */
 export function rowToEvent(row: EventRow): SessionEvent {
-  // Surface-metadata fields are conditional on the event type in the type
-  // system; spread them so each variant gets only the fields it declares.
-  const surfaceFields = {
-    ...row.source_event_seqs !== null ? { sourceEventSeqs: JSON.parse(row.source_event_seqs) as number[] } : {},
-    ...row.surface_op !== null ? { surfaceOp: JSON.parse(row.surface_op) as SurfaceOp } : {},
+  if (typeof row.source_event_seqs === 'string') {
+    return {
+      type: row.type as SessionEvent['type'],
+      seq: row.seq,
+      time: row.time,
+      data: JSON.parse(row.data as string) as SessionEvent['data'],
+      sourceEventSeqs: JSON.parse(row.source_event_seqs) as number[],
+      ...row.surface_op !== null ? { surfaceOp: JSON.parse(row.surface_op) as SessionEvent<SurfaceEventType>['surfaceOp'] } : {},
+      ...row.ignorable === 1 ? { ignorable: true as const } : {},
+    } as SessionEvent
   }
-  const ignorableField = row.ignorable === 1 ? { ignorable: true as const } : {}
-  return {
-    type: row.type as SessionEvent['type'],
-    seq: row.seq,
-    time: row.time,
-    data: JSON.parse(row.data) as SessionEvent['data'],
-    ...surfaceFields,
-    ...ignorableField,
-  } as SessionEvent
+  const events = decodeRow(row)
+  if (events.length !== 1) throw new Error(`physical row at seq ${row.seq} represents ${events.length} events`)
+  return events[0] as SessionEvent
 }
 
 /**
@@ -382,7 +439,13 @@ export function rowToEvent(row: EventRow): SessionEvent {
  * @returns the preserved event prefix, plus `tornFrom` — the seq the physical
  *   delete starts at — when a torn tail exists.
  */
-export function scanRows(rows: readonly EventRow[], base = 0): { preserved: SessionEvent[]; tornFrom?: number } {
+/**
+ * Scan legacy scalar rows for source-level fixtures that predate schema 17.
+ * @param rows - legacy rows ordered by sequence.
+ * @param base - sequence expected at the first row.
+ * @returns the preserved prefix and optional tail marker.
+ */
+function scanRowsLegacy(rows: readonly EventRow[], base = 0): { preserved: SessionEvent[]; tornFrom?: number } {
   // Pass 1: parse each row's data; a row whose data is not valid JSON is a hole.
   // (The seq/type COLUMNS are always present even when `data` is corrupt.)
   interface Parsed { ok: boolean; event?: SessionEvent }
@@ -420,4 +483,15 @@ export function scanRows(rows: readonly EventRow[], base = 0): { preserved: Sess
   // Any rows past the preserved prefix are a never-committed torn tail; their
   // first seq is the deletion point for load's physical repair.
   return preserved.length < rows.length ? { preserved, tornFrom: base + preserved.length } : { preserved }
+}
+
+/**
+ * Scan physical rows with packed-row expansion and crash-tail semantics.
+ * @param rows - physical rows ordered by their first logical sequence.
+ * @param base - sequence expected at the first selected row.
+ * @returns the preserved prefix and optional physical tail marker.
+ */
+export function scanRows(rows: readonly EventRow[], base = 0): { preserved: SessionEvent[]; tornFrom?: number } {
+  const legacy = rows.every(row => typeof row.data === 'string' && (row.source_event_seqs === null || typeof row.source_event_seqs === 'string') && row.ignorable !== 0)
+  return legacy ? scanRowsLegacy(rows, base) : scanPhysicalRows(rows, base)
 }

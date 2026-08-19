@@ -728,7 +728,7 @@ describe('SqliteSessionPersistence: durability and crash semantics', () => {
   })
 
   it('exposes the schema version constant', () => {
-    expect(SCHEMA_VERSION).toBe(16)
+    expect(SCHEMA_VERSION).toBe(17)
   })
 
   it('keeps the revision stable for an empty repair hook', async () => {
@@ -921,7 +921,7 @@ describe('SqliteSessionPersistence: edge cases', () => {
     // b2 still thinks its cursor is 6, so this batch passes the contiguity check
     // but its INSERT of seq 6 hits the UNIQUE (session_id, seq) constraint
     // mid-transaction → ROLLBACK + rethrow.
-    await expect(b2.ctx.sessionPersistence.append(m.id, turn2)).rejects.toThrow(/UNIQUE/)
+    await expect(b2.ctx.sessionPersistence.append(m.id, turn2)).rejects.toThrow(/stored next seq is 8/)
     // b1's turn is intact; b2's rolled-back attempt left nothing extra.
     const loaded = await b1.ctx.sessionPersistence.load(m.id)
     expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7])

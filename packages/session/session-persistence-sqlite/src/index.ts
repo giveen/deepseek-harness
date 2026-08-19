@@ -24,14 +24,18 @@ import {
   type SessionPersistenceRevision as PersistenceRevision,
   type StoredPrefix, type StoredSuffix,
 } from '@deepseek-ai/dsh-session-persistence'
-import type { SessionEvent, SurfaceEventType, SessionId, SessionHeader, SessionPreparation } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId, SessionHeader, SessionPreparation } from '@deepseek-ai/dsh-session'
 import {
-  type JournalMode, type SynchronousMode, type CheckpointMode, openDatabase, rowToMeta, scanRows, type EventRow, type SessionRow,
+  type JournalMode, type SynchronousMode, type CheckpointMode,
+  openDatabase, validateDatabaseSchema, rowToMeta, type EventRow, type SessionRow,
   type DeletionMarkRow,
   backupDatabase, checkpointDatabase, checkDatabaseIntegrity, type SqliteCheckpointReport, type SqliteIntegrityReport,
   DEFAULT_BUSY_TIMEOUT_MS, MAX_BUSY_TIMEOUT_MS, DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
   MAX_WAL_AUTOCHECKPOINT_PAGES, DEFAULT_SYNCHRONOUS_MODE,
 } from './schema.ts'
+import { bindRecord, decodeRow, scanRows as scanPhysicalRows } from './compression.ts'
+import { packChunkRuns } from './codec.ts'
+
 
 export {
   SCHEMA_VERSION,
@@ -47,22 +51,6 @@ export {
   type SqliteCheckpointReport,
   type SqliteIntegrityReport,
 } from './schema.ts'
-
-/**
- * Serialize an event's optional envelope fields for SQL binding. The surface
- * fields are nullable TEXT columns — null when the event has no surface
- * metadata (non-surface events, events written before surface support); the
- * ignorable marker is a nullable INTEGER column — `1` iff the envelope carries
- * `ignorable: true`.
- */
-function envelopeBindings(event: SessionEvent): [string | null, string | null, number | null] {
-  const se = event as SessionEvent<SurfaceEventType>
-  return [
-    se.sourceEventSeqs ? JSON.stringify(se.sourceEventSeqs) : null,
-    se.surfaceOp !== undefined ? JSON.stringify(se.surfaceOp) : null,
-    event.ignorable === true ? 1 : null,
-  ]
-}
 
 /** Build the source-qualified revision shared by full and lightweight reads. */
 function sqliteRevision(storeIdentity: string, row: SessionRow): PersistenceRevision {
@@ -276,7 +264,7 @@ export class SqliteSessionPersistence extends SessionPersistence implements Pers
       if (row !== undefined) {
         const eventRows = this.db
           .prepare('SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable FROM events WHERE session_id = ? AND seq >= ? ORDER BY seq')
-          .all(id, fromSeq) as unknown as EventRow[]
+          .all(id, Math.max(0, fromSeq - 1_023)) as unknown as EventRow[]
         snapshot = { row, eventRows }
       }
       this.db.exec('COMMIT')
@@ -289,8 +277,9 @@ export class SqliteSessionPersistence extends SessionPersistence implements Pers
     signal?.throwIfAborted()
     if (snapshot === undefined) return undefined
     const { row, eventRows } = snapshot
-    const { preserved } = scanRows(eventRows, fromSeq)
-    return { meta: rowToMeta(row), events: preserved }
+    const base = eventRows[0]?.seq ?? fromSeq
+    const { preserved } = scanPhysicalRows(eventRows, base)
+    return { meta: rowToMeta(row), events: preserved.filter(event => event.seq >= fromSeq) }
   }
 
   /**
@@ -322,7 +311,7 @@ export class SqliteSessionPersistence extends SessionPersistence implements Pers
     signal?.throwIfAborted()
     if (snapshot === undefined) return undefined
     const { row, eventRows } = snapshot
-    const { preserved, tornFrom } = scanRows(eventRows)
+    const { preserved, tornFrom } = scanPhysicalRows(eventRows)
     return {
       meta: rowToMeta(row),
       events: preserved,
@@ -342,15 +331,24 @@ export class SqliteSessionPersistence extends SessionPersistence implements Pers
     const insertEvent = this.db.prepare(
       'INSERT INTO events (session_id, seq, type, time, data, source_event_seqs, surface_op, ignorable) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     )
-    this.db.exec('BEGIN')
+    this.db.exec('BEGIN IMMEDIATE')
     try {
+      validateDatabaseSchema(this.db, this.config.path)
       if (this.isMarked(meta.id)) {
         throw new Error(`session "${meta.id}" is marked for deletion and cannot accept new events`)
       }
+      const tailRows = this.db.prepare(
+        'SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable FROM events WHERE session_id = ? ORDER BY seq DESC LIMIT 1',
+      ).all(meta.id) as unknown as EventRow[]
+      const last = tailRows[0] === undefined ? undefined : decodeRow(tailRows[0]).at(-1)
+      const expected = last === undefined ? 0 : last.seq + 1
+      if (events[0]?.seq !== expected) {
+        throw new Error(`session ${meta.id} append starts at seq ${events[0]?.seq}, stored next seq is ${expected}`)
+      }
       if (!isMaterialized) this.writeRow(meta)
-      for (const event of events) {
-        const [surfaceSeqs, surfaceOp, ignorable] = envelopeBindings(event)
-        insertEvent.run(meta.id, event.seq, event.type, event.time, JSON.stringify(event.data), surfaceSeqs, surfaceOp, ignorable)
+      for (const record of packChunkRuns(events)) {
+        const bound = bindRecord(record)
+        insertEvent.run(meta.id, bound.seq, bound.type, bound.time, bound.data, bound.sourceEventSeqs, bound.surfaceOp, bound.ignorable)
       }
       this.db.prepare('UPDATE sessions SET revision = revision + 1 WHERE id = ?').run(meta.id)
       this.db.exec('COMMIT')
@@ -367,18 +365,33 @@ export class SqliteSessionPersistence extends SessionPersistence implements Pers
    */
   async commitRepair(meta: SessionHeader, tornMarker: number | undefined, closers: readonly SessionEvent[]): Promise<void> {
     await this.ready
-    this.db.exec('BEGIN')
+    this.db.exec('BEGIN IMMEDIATE')
     try {
+      validateDatabaseSchema(this.db, this.config.path)
+      const currentRows = this.db
+        .prepare('SELECT seq, type, time, data, source_event_seqs, surface_op, ignorable FROM events WHERE session_id = ? ORDER BY seq')
+        .all(meta.id) as unknown as EventRow[]
+      const current = scanPhysicalRows(currentRows)
+      if (tornMarker !== undefined && current.tornFrom !== tornMarker) {
+        throw new Error(`session ${meta.id} repair is stale: physical tail no longer starts at seq ${tornMarker}`)
+      }
+      if (tornMarker === undefined && current.tornFrom !== undefined) {
+        throw new Error(`session ${meta.id} repair omitted current torn tail at seq ${current.tornFrom}`)
+      }
       if (tornMarker !== undefined) {
         this.db.prepare('DELETE FROM events WHERE session_id = ? AND seq >= ?').run(meta.id, tornMarker)
       }
       if (closers.length > 0) {
+        const expected = current.preserved.at(-1)?.seq === undefined ? 0 : (current.preserved.at(-1) as SessionEvent).seq + 1
+        if (closers[0]?.seq !== expected) {
+          throw new Error(`session ${meta.id} repair is stale: closer starts at seq ${closers[0]?.seq}, stored next seq is ${expected}`)
+        }
         const insertEvent = this.db.prepare(
           'INSERT INTO events (session_id, seq, type, time, data, source_event_seqs, surface_op, ignorable) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         )
         for (const event of closers) {
-          const [surfaceSeqs, surfaceOp, ignorable] = envelopeBindings(event)
-          insertEvent.run(meta.id, event.seq, event.type, event.time, JSON.stringify(event.data), surfaceSeqs, surfaceOp, ignorable)
+          const bound = bindRecord(event)
+          insertEvent.run(meta.id, bound.seq, bound.type, bound.time, bound.data, bound.sourceEventSeqs, bound.surfaceOp, bound.ignorable)
         }
       }
       if (tornMarker !== undefined || closers.length > 0) {

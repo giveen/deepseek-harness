@@ -1641,7 +1641,7 @@ export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
 export type SynchronousMode = 'full' | 'normal'
 ```
 
-Source: [`packages/session/session-persistence-sqlite/src/index.ts:91`](../packages/session/session-persistence-sqlite/src/index.ts)
+Source: [`packages/session/session-persistence-sqlite/src/index.ts:79`](../packages/session/session-persistence-sqlite/src/index.ts)
 
 <a id="deepseek-aidsh-session-projection-cache"></a>
 
