@@ -37,6 +37,15 @@ const RELEASE_TYPES = ['major', 'minor', 'patch'] as const
 /** The workspace root manifest, which carries the dsh family's version. */
 const ROOT_MANIFEST = 'package.json'
 
+/**
+ * Return a repository-relative package manifest path with Git-compatible separators.
+ * @param directory - Repository-relative package directory.
+ * @returns The normalized `package.json` path.
+ */
+export function releaseManifestPath(directory: string): string {
+  return `${directory.replaceAll('\\', '/')}/package.json`
+}
+
 /** One manifest the bump rewrites, and the tag its new version will carry. */
 interface PlannedVersion {
   /** Repository-relative manifest path. */
@@ -259,7 +268,7 @@ function planShared(
   ]
   for (const member of members) {
     planned.push({
-      manifestPath: join(member.directory, 'package.json'),
+      manifestPath: releaseManifestPath(member.directory),
       label: member.directory,
       from: member.version,
       to: version,
@@ -287,7 +296,7 @@ function planPerPackage(
     const tagged = lastTaggedVersion(family, member)
     const to = nextVendorVersion(member.version, tagged, prerelease)
     planned.push({
-      manifestPath: join(member.directory, 'package.json'),
+      manifestPath: releaseManifestPath(member.directory),
       label: member.directory,
       from: member.version,
       to,

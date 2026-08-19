@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { releaseFamily, type ReleaseMember } from './families.ts'
-import { compareVersions, nextVendorVersion, reachesPayload } from './bump.ts'
+import { compareVersions, nextVendorVersion, reachesPayload, releaseManifestPath } from './bump.ts'
 
 /**
  * A release member standing in for a manifest on disk.
@@ -16,6 +16,11 @@ function member(directory: string, name: string, manifest: Record<string, unknow
 }
 
 describe('release families', () => {
+  it('normalizes planned manifest paths for Git on every platform', () => {
+    expect(releaseManifestPath('packages\\core\\session')).toBe('packages/core/session/package.json')
+    expect(releaseManifestPath('vendor/cordis')).toBe('vendor/cordis/package.json')
+  })
+
   it('names one tag for the whole dsh family and one per vendored package', () => {
     const dsh = releaseFamily('dsh')
     const vendor = releaseFamily('vendor')
