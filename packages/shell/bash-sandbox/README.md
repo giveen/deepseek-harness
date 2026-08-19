@@ -20,6 +20,7 @@ Semantics:
 - **The runner path or syscall must match.** Before a process starts, a rejection is attributed to the runner only when the caller-owned workdir is independently usable and Node reports `ENOENT` or `EACCES` with either an `error.path` equal to provider argv[0] or, when `error.path` is absent, an exact `syscall: 'spawn <runner>'`. A present path also requires `syscall: 'spawn'` or the exact `spawn <runner>`. This covers a missing runner, a non-executable runner, or an executable script whose shebang interpreter is unavailable. A bare `syscall: 'spawn'` without an exact error path, any other code, an invalid or unusable workdir, a resource failure, an unrelated syscall, or an unstructured rejection retains the local executor's command-start failure semantics. Foreground execution throws `SANDBOX_UNAVAILABLE` with the original spawn detail, while asynchronous background settlement stamps `runnerFailed: true` and `denied: false`. If a `SubprocessRuntime` synchronously throws the same runner-identifying `ENOENT`/`EACCES` shape, background start throws `SANDBOX_UNAVAILABLE`; other synchronous errors propagate unchanged. After a process starts, a rule's optional exit-code check and a remaining fatal stderr line must both match after exact informational-line exclusions. A match takes priority over denial; foreground execution throws `SANDBOX_UNAVAILABLE` with the matched fatal line, while a settled background process stamps `process.sandbox.runnerFailed`, which the bash producer renders through generic `job_output`. Confined background handles retain their mode/enforcement facts and release per-process accounting in either path.
 - **Deployment fallback, per-call policy.** [`ctx.sandboxPolicy`](../../sandbox/sandbox-policy/) resolves a complete `SandboxExecutionPolicy` for every tool call: the calling session supplies its mode override and immutable cwd root, while deployment config supplies the fallbacks for agentless calls. An approved escalation changes only that policy's mode; its session root stays attached. `resolve()` carries the policy onto the spec, so overlapping commands from different projects run, classify, and report under their own roots and modes. The capability fact `ctx.shell.sandboxMode` reports the configured default so the tool layer advertises escalation only when this executor is mounted; the static bash tool description separately owns denial and escalation guidance.
 - **File effects only.** Network and process visibility are deliberately not restricted — the mode vocabulary does not pretend to cover what the backend does not enforce.
+- **Sudo credential piping.** When `ctx.sandboxPolicy` is configured with a `sudoCredential` reference name, the bash executor resolves the credential from `ctx.credentials` per call. If the command contains `sudo` and the credential is available, the password is piped to stdin so `sudo -S` reads it without prompting. This works in any sandbox mode, including `danger-full-access`.
 - Process mechanics (spawn, process-group kills, output collection/spill, background handles, credential scrub) are inherited from [`dsh-bash-local`](../bash-local/); runner selection lives in [`dsh-sandbox-local`](../../sandbox/sandbox-local/).
 
 Deny-only at the seam: a denial is a reported fact, and this executor never negotiates permissions itself — the approval question lives in the tool layer (`dsh-tool-bash`), which drives the override this package honors.
@@ -32,8 +33,15 @@ Deny-only at the seam: a denial is a reported fact, and this executor never nego
   config:
     mode: read-only
     workspaceRoot: !!js process.cwd() # fallback for calls without a session cwd
+    sudoCredential: DSH_SUDO_PASSWORD # optional: pipe sudo password from credentials
 - id: bash
   name: '@deepseek-ai/dsh-bash-sandbox'
+```
+
+The sudo password is stored in `$DSH_HOME/.credentials.yaml` (or any credential provider layer):
+
+```yaml
+DSH_SUDO_PASSWORD: my-sudo-password
 ```
 
 ## Model Experience

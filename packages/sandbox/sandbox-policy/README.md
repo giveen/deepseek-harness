@@ -12,10 +12,12 @@ Filesystem tools, one-shot bash commands, and terminal sessions may enforce the 
 
 - `mode` — the deployment default `SandboxMode` (`read-only` / `workspace-write` / `danger-full-access`), validated at load. Default `read-only` (fail-safe).
 - `workspaceRoot` — the fallback directory `workspace-write` may write under for agentless calls or sessions without a cwd. Default `process.cwd()`, resolved to its absolute filesystem identity either way. A normal agent call uses its session header's immutable `cwd` instead.
+- `sudoCredential` — optional credential reference name (e.g. `'DSH_SUDO_PASSWORD'`) for the sudo password. When set and the credential is configured in `ctx.credentials`, the bash executor resolves it per call and pipes it to `sudo -S` via stdin. Absent means no automatic sudo password; sudo commands prompt as usual. The credential is resolved from `ctx.credentials`, so it can live in `$DSH_HOME/.credentials.yaml` or any other credential provider layer.
 
 ## API
 
 - `ctx.sandboxPolicy.resolve({ session?, mode? })` — resolves one complete per-call policy. An explicit approved mode outranks the session's last `sandbox/mode` event, which outranks `defaultMode`; the session's immutable `cwd` is canonicalized with filesystem semantics before becoming `workspaceRoot`, otherwise the configured fallback applies. Canonicalization precedes lexical normalization so `symlink/..` agrees with process working-directory resolution.
+- `ctx.sandboxPolicy.resolveSudoPassword()` — resolves the sudo password from the configured credential reference. Returns the password string when configured and available, or `undefined` when no `sudoCredential` is set or the credential is not configured. Callers await this separately from `resolve()` to keep the policy resolution synchronous.
 - `ctx.sandboxPolicy.defaultMode` / `ctx.sandboxPolicy.workspaceRoot` — the deployment default and fallback root used by `resolve()`.
 - `sandbox:policy` — a request-time cache-safe context contribution derived directly from `resolve({ session })`. It states the mode's capability-neutral file-effect contract and the canonical session workspace under `workspace-write`; tool owners retain operation-specific denial and escalation guidance.
 - `effectiveSandboxMode(events)` — the pure fold of a session's `sandbox/mode` events (the last switch wins, or `undefined`), used inside `resolve()`.

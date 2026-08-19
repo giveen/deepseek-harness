@@ -207,6 +207,40 @@ describe('sandbox:policy request context', () => {
   })
 })
 
+describe('sudo credential resolution', () => {
+  it('resolveSudoPassword returns undefined when no sudoCredential is configured', async () => {
+    const ctx = await mounted()
+    expect(await ctx.sandboxPolicy.resolveSudoPassword()).toBeUndefined()
+  })
+
+  it('resolveSudoPassword returns the credential value when configured', async () => {
+    const ctx = new Context()
+    // Mock credential provider that returns a fixed password
+    ctx.provide('credentials', {
+      async resolve(ref: string) {
+        return ref === 'DSH_SUDO_PASSWORD' ? { value: 'test-pass-123', source: 'file' } : undefined
+      },
+      async describe() { return { configured: false, writable: true } },
+      async set() {},
+      async unset() {},
+    } as never)
+    await ctx.plugin(SandboxPolicyService, { sudoCredential: 'DSH_SUDO_PASSWORD' })
+    expect(await ctx.sandboxPolicy.resolveSudoPassword()).toBe('test-pass-123')
+  })
+
+  it('resolveSudoPassword returns undefined when the credential is not configured', async () => {
+    const ctx = new Context()
+    ctx.provide('credentials', {
+      async resolve() { return undefined },
+      async describe() { return { configured: false, writable: true } },
+      async set() {},
+      async unset() {},
+    } as never)
+    await ctx.plugin(SandboxPolicyService, { sudoCredential: 'DSH_SUDO_PASSWORD' })
+    expect(await ctx.sandboxPolicy.resolveSudoPassword()).toBeUndefined()
+  })
+})
+
 describe('the sandbox/mode session kit', () => {
   it('SANDBOX_MODES lists every mode for advertisement and validation', () => {
     expect(SANDBOX_MODES).toEqual(['read-only', 'workspace-write', 'danger-full-access'])

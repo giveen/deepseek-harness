@@ -49,6 +49,12 @@ export interface SandboxExecutionPolicy {
    * for agentless calls, which fall back to per-call backend state.
    */
   sessionId?: SessionId
+  /**
+   * Resolved sudo password for commands that need elevated privileges.
+   * When present, the bash executor pipes this to `sudo -S` via stdin.
+   * Absent means no sudo password is available; sudo commands prompt as usual.
+   */
+  sudoPassword?: string
 }
 
 /**

@@ -74,6 +74,46 @@ async function setup(
   return { ctx, bash, calls }
 }
 
+/**
+ * Boot a context with a mock credential provider that returns `password` for
+ * the `DSH_SUDO_PASSWORD` ref, wired through the sandbox-policy `sudoCredential`
+ * config so the bash executor can resolve it.
+ */
+async function setupWithSudoCredential(
+  password: string,
+  config: { mode?: SandboxMode; workspaceRoot?: string } & Config = {},
+) {
+  const { mode, workspaceRoot, ...execConfig } = config
+  const calls: ConfineCall[] = []
+  class FakeSandboxProvider extends SandboxProvider {
+    confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv {
+      calls.push({ argv: [...argv], policy })
+      return passthrough(argv)
+    }
+  }
+  const ctx = new Context()
+  await ctx.plugin(FakeSandboxProvider)
+  // Mock credential provider returning the sudo password
+  ctx.provide('credentials', {
+    async resolve(ref: string) {
+      return ref === 'DSH_SUDO_PASSWORD' ? { value: password, source: 'file' as const } : undefined
+    },
+    async describe() { return { configured: false, writable: true } },
+    async set() {},
+    async unset() {},
+  } as never)
+  await ctx.plugin(SandboxPolicyService, {
+    ...mode !== undefined ? { mode } : {},
+    ...workspaceRoot !== undefined ? { workspaceRoot } : {},
+    sudoCredential: 'DSH_SUDO_PASSWORD',
+  })
+  await ctx.plugin(LocalSubprocessRuntime)
+  ;(ctx.subprocess as LocalSubprocessRuntime).internals = { spillDir }
+  await ctx.plugin(SandboxBashExecutor, { graceMs: 200, ...execConfig })
+  const bash = ctx.shell as SandboxBashExecutor
+  return { ctx, bash, calls }
+}
+
 function output(text: string): CollectedOutput {
   return { text, truncated: false }
 }
@@ -356,6 +396,37 @@ describe('per-call sandbox policy (the session and escalation carrier)', () => {
     expect(task.sandbox).toBeUndefined()
     expect(task.readOutput().delta).toContain('bg-free')
     expect(calls).toHaveLength(0)
+  })
+})
+
+describe('sudo credential piping', () => {
+  it('pipes the sudo password to stdin when the command uses sudo and a credential is configured', async () => {
+    const { bash } = await setupWithSudoCredential('s3cret')
+    // Run a command that reads stdin and echoes it — sudo -S would read the password from stdin
+    const result = await bash.run(bash.resolve({
+      command: 'cat',
+      sandboxPolicy: executionPolicy('danger-full-access'),
+    }))
+    // The password should be in stdout (cat echoes stdin)
+    expect(result.stdout.text).toContain('s3cret')
+  })
+
+  it('does not pipe a password when the command does not use sudo', async () => {
+    const { bash } = await setupWithSudoCredential('s3cret')
+    const result = await bash.run(bash.resolve({
+      command: 'echo no-sudo',
+      sandboxPolicy: executionPolicy('danger-full-access'),
+    }))
+    expect(result.stdout.text).toBe('no-sudo\n')
+  })
+
+  it('works normally when no sudo credential is configured', async () => {
+    const { bash } = await setup()
+    const result = await bash.run(bash.resolve({
+      command: 'echo no-credential',
+      sandboxPolicy: executionPolicy('danger-full-access'),
+    }))
+    expect(result.stdout.text).toBe('no-credential\n')
   })
 })
 

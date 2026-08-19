@@ -23,6 +23,8 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent'
 import { canonicalPath, type SandboxExecutionPolicy, type SandboxMode } from '@deepseek-ai/dsh-sandbox'
+import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
+import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { effectiveSandboxMode } from './session-mode.ts'
@@ -72,6 +74,15 @@ export interface Config {
    * `process.cwd()`). Normal agent calls use their session cwd instead.
    */
   workspaceRoot?: string
+  /**
+   * Credential reference name for the sudo password (e.g. `'DSH_SUDO_PASSWORD'`).
+   * When set and the credential is configured, the bash executor resolves it
+   * per call and pipes it to `sudo -S` via stdin. The credential is resolved
+   * from `ctx.credentials`, so it can live in `$DSH_HOME/.credentials.yaml`
+   * or any other credential provider layer. Absent means no automatic sudo
+   * password; sudo commands prompt as usual.
+   */
+  sudoCredential?: string
 }
 
 /** Inputs that select the sandbox policy for one capability call. */
@@ -95,12 +106,17 @@ export class SandboxPolicyService extends Service {
     // No schema default: process.cwd() is resolved in the constructor so the
     // stored root is always absolute regardless of how it was supplied.
     workspaceRoot: z.string(),
+    // Credential reference name for the sudo password. Absent means no
+    // automatic sudo password; sudo commands prompt as usual.
+    sudoCredential: z.string(),
   })
 
   /** The deployment default mode — the fallback beneath a session override. */
   readonly defaultMode: SandboxMode
   /** The absolute `workspace-write` fallback root for calls without a session cwd. */
   readonly workspaceRoot: string
+  /** Credential reference for the sudo password, if configured. */
+  private readonly sudoRef: CredentialRef | undefined
   constructor(ctx: Context, config: Config) {
     super(ctx, 'sandboxPolicy')
     // schemastery (static Config) already filled `mode`; the cast records that
@@ -108,6 +124,9 @@ export class SandboxPolicyService extends Service {
     // the process cwd is real branching, resolved absolute either way.
     this.defaultMode = config.mode as SandboxMode
     this.workspaceRoot = resolveWorkspaceRoot(config.workspaceRoot ?? process.cwd())
+    this.sudoRef = config.sudoCredential !== undefined && config.sudoCredential.length > 0
+      ? credentialRef(config.sudoCredential)
+      : undefined
 
     ctx.inject(['systemPrompt'], (scope: Context) => {
       scope.systemPrompt.context({
@@ -139,6 +158,19 @@ export class SandboxPolicyService extends Service {
       workspaceRoot: resolveWorkspaceRoot(session?.header.cwd ?? this.workspaceRoot),
       ...session === undefined ? {} : { sessionId: session.id },
     }
+  }
+
+  /**
+   * Resolve the sudo password from the configured credential reference.
+   * Returns the password string when configured and available, or `undefined`
+   * when no `sudoCredential` is set or the credential is not configured.
+   * Callers await this separately from `resolve()` to keep the policy
+   * resolution synchronous.
+   * @returns the resolved sudo password, or `undefined` when unavailable.
+   */
+  async resolveSudoPassword(): Promise<string | undefined> {
+    if (this.sudoRef === undefined) return undefined
+    return (await this.ctx.credentials.resolve(this.sudoRef))?.value
   }
 
   /**

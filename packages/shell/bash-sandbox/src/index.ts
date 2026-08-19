@@ -25,6 +25,10 @@ import { LocalBashExecutor } from '@deepseek-ai/dsh-bash-local'
 import type { Config as LocalConfig } from '@deepseek-ai/dsh-bash-local'
 import { classifyDenial, classifyRunnerFailure, isRunnerSpawnFailure, matchesSignature } from './helpers.ts'
 
+/** Prepend the sudo password to stdin data so `sudo -S` reads it from the pipe. */
+const sudoStdin = (stdin: string | undefined, password: string): string =>
+  stdin !== undefined && stdin.length > 0 ? password + '\n' + stdin : password + '\n'
+
 /**
  * Plugin config: the local executor's knobs, verbatim. The sandbox policy —
  * the default mode and fallback `workspace-write` root — is NOT here: it lives
@@ -88,8 +92,16 @@ export class SandboxBashExecutor extends LocalBashExecutor {
   override async run(spec: ShellExecSpec): Promise<ShellRunResult> {
     const policy = spec.sandboxPolicy as SandboxExecutionPolicy
     const { mode } = policy
+    // Resolve the sudo password from the credential provider when configured
+    // and the command uses sudo. The password is piped to `sudo -S` via stdin.
+    const sudoPassword = /\bsudo\b/.test(spec.command)
+      ? await this.ctx.sandboxPolicy.resolveSudoPassword()
+      : undefined
+    const sudoSpec = sudoPassword !== undefined
+      ? { ...spec, stdin: sudoStdin(spec.stdin, sudoPassword) }
+      : spec
     if (mode === 'danger-full-access') {
-      const result = await super.run(spec)
+      const result = await super.run(sudoSpec)
       return { ...result, sandbox: { mode, denied: false } }
     }
     const confined = this.confine(spec.command, { ...policy, mode })
