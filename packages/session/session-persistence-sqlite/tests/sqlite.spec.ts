@@ -10,6 +10,7 @@ import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SurfaceEvent, SurfaceEventType } from '@deepseek-ai/dsh-session'
 import SqliteSessionPersistence, { SCHEMA_VERSION } from '@deepseek-ai/dsh-session-persistence-sqlite'
 import {
+  checkpointDatabase,
   openDatabase,
   rowToEvent,
   rowToMeta,
@@ -658,8 +659,76 @@ describe('SqliteSessionPersistence: durability and crash semantics', () => {
     await b.dispose()
   })
 
+  it('marks sessions, protects referenced history, and sweeps marked descendants', async () => {
+    const b = await backend()
+    const parent = meta('retention-parent')
+    const child = { ...meta('retention-child'), parentSession: parent.id }
+    await b.ctx.sessionPersistence.create(parent)
+    await b.ctx.sessionPersistence.append(parent.id, oneTurnLog())
+    await b.ctx.sessionPersistence.create(child)
+    await b.ctx.sessionPersistence.append(child.id, oneTurnLog())
+
+    await expect(b.ctx.sessionPersistence.markForDeletion([parent.id], 'user request'))
+      .resolves.toEqual({
+        marked: [parent.id], alreadyMarked: [], missing: [], skippedLive: [],
+      })
+    await expect(b.ctx.sessionPersistence.markForDeletion([parent.id, parent.id]))
+      .resolves.toEqual({
+        marked: [], alreadyMarked: [parent.id], missing: [], skippedLive: [],
+      })
+    expect((await b.ctx.sessionPersistence.list()).map(session => session.id)).toEqual([child.id])
+    expect(await b.ctx.sessionPersistence.listDeletionMarks()).toMatchObject([{
+      id: parent.id, reason: 'user request',
+    }])
+    await expect(b.ctx.sessionPersistence.sweepMarked()).resolves.toEqual({
+      deleted: [], skippedLive: [], skippedReferenced: [parent.id], remaining: 1,
+    })
+
+    await expect(b.ctx.sessionPersistence.markForDeletion([child.id])).resolves.toMatchObject({
+      marked: [child.id], missing: [], skippedLive: [],
+    })
+    const swept = await b.ctx.sessionPersistence.sweepMarked()
+    expect(new Set(swept.deleted)).toEqual(new Set([parent.id, child.id]))
+    expect(swept.skippedReferenced).toEqual([])
+    expect(swept.remaining).toBe(0)
+    expect(await b.ctx.sessionPersistence.list()).toEqual([])
+    expect(await b.ctx.sessionPersistence.listDeletionMarks()).toEqual([])
+    await b.ctx.sessionPersistence.create(parent)
+    await b.ctx.sessionPersistence.append(parent.id, oneTurnLog())
+    expect(await b.ctx.sessionPersistence.load(parent.id)).toMatchObject({ meta: parent })
+    await b.dispose()
+  })
+
+  it('does not mark or sweep a live session', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const fiber = await ctx.plugin(SqliteSessionPersistence, { path: ':memory:' })
+    const live = ctx.sessions.create(SessionId('retention-live'))
+    appendLog(live, oneTurnLog())
+    await ctx.sessions.flush(live)
+
+    await expect(ctx.sessionPersistence.markForDeletion([live.id])).resolves.toEqual({
+      marked: [], alreadyMarked: [], missing: [], skippedLive: [live.id],
+    })
+    await expect(ctx.sessionPersistence.sweepMarked()).resolves.toEqual({
+      deleted: [], skippedLive: [], skippedReferenced: [], remaining: 0,
+    })
+    await fiber.dispose()
+  })
+
+  it('rejects deletion marks with an oversized reason and invalid sweep limits', async () => {
+    const b = await backend()
+    const session = meta('retention-validation')
+    await b.ctx.sessionPersistence.create(session)
+    await b.ctx.sessionPersistence.append(session.id, oneTurnLog())
+    await expect(b.ctx.sessionPersistence.markForDeletion([session.id], 'x'.repeat(257)))
+      .rejects.toThrow('deletion mark reason must be at most 256 characters')
+    await expect(b.ctx.sessionPersistence.sweepMarked(0)).rejects.toThrow(/between 1 and 500/)
+    await b.dispose()
+  })
+
   it('exposes the schema version constant', () => {
-    expect(SCHEMA_VERSION).toBe(15)
+    expect(SCHEMA_VERSION).toBe(16)
   })
 
   it('keeps the revision stable for an empty repair hook', async () => {
@@ -672,9 +741,67 @@ describe('SqliteSessionPersistence: durability and crash semantics', () => {
     expect(await b.ctx.sessionPersistence.listSnapshots()).toEqual(before)
     await b.dispose()
   })
+
+  it('runs integrity diagnostics and creates an online backup', async () => {
+    const path = await freshDbPath()
+    const b = await backend(path)
+    const m = meta('backup')
+    await b.ctx.sessionPersistence.create(m)
+    await b.ctx.sessionPersistence.append(m.id, oneTurnLog())
+    const persistence = b.ctx.sessionPersistence as SqliteSessionPersistence
+
+    await expect(persistence.checkIntegrity()).resolves.toEqual({
+      ok: true,
+      integrityCheck: ['ok'],
+      foreignKeyViolations: [],
+    })
+    const destination = join(dirname(path), 'backup.db')
+    await expect(persistence.backup(destination)).resolves.toBeGreaterThan(0)
+    const copy = openDatabase(destination, 'wal')
+    expect(copy.prepare('SELECT COUNT(*) AS count FROM events WHERE session_id = ?').get(m.id))
+      .toEqual({ count: oneTurnLog().length })
+    copy.close()
+    await b.dispose()
+  })
 })
 
 describe('SqliteSessionPersistence: edge cases', () => {
+  it('uses FULL synchronous durability and a bounded lock timeout by default', async () => {
+    const path = await freshDbPath()
+    const db = openDatabase(path, 'wal')
+    expect((db.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous).toBe(2)
+    expect((db.prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout).toBe(5_000)
+    expect((db.prepare('PRAGMA wal_autocheckpoint').get() as { wal_autocheckpoint: number }).wal_autocheckpoint).toBe(1_000)
+    expect(checkpointDatabase(db)).toMatchObject({ mode: 'passive', busy: 0 })
+    db.close()
+
+    const configured = openDatabase(path, 'wal', {
+      synchronous: 'normal',
+      busyTimeoutMs: 1_234,
+      walAutocheckpointPages: 321,
+    })
+    expect((configured.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous).toBe(1)
+    expect((configured.prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout).toBe(1_234)
+    expect((configured.prepare('PRAGMA wal_autocheckpoint').get() as { wal_autocheckpoint: number }).wal_autocheckpoint).toBe(321)
+    configured.close()
+  })
+
+  it('lists persistence snapshots through a bounded keyset cursor', async () => {
+    const b = await backend()
+    for (const id of ['page-a', 'page-b', 'page-c']) {
+      const session = meta(id)
+      await b.ctx.sessionPersistence.create(session)
+      await b.ctx.sessionPersistence.append(session.id, oneTurnLog())
+    }
+    const first = await b.ctx.sessionPersistence.listSnapshotsPage(2)
+    expect(first.snapshots).toHaveLength(2)
+    expect(first.nextCursor).toBeDefined()
+    const second = await b.ctx.sessionPersistence.listSnapshotsPage(2, first.nextCursor)
+    expect(second.snapshots).toHaveLength(1)
+    expect(new Set([...first.snapshots, ...second.snapshots].map(snapshot => snapshot.header.id)).size).toBe(3)
+    await b.dispose()
+  })
+
   it('resolves the preparation-cache default without schema normalization', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

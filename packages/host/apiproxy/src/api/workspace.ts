@@ -9,6 +9,53 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { RpcRequest, RpcResponse } from './rpc.ts'
 
+/** Opaque Git object id returned by the Host's repository inspection API. */
+export type GitCommitId = Branded<'GitCommitId'>
+
+/** One bounded file-system entry in a Workspace. */
+export interface WorkspaceFileEntry {
+  /** Absolute Host path used only for the native open-path hand-off. */
+  path: string
+  /** Workspace-relative path displayed by the client. */
+  relativePath: string
+  /** Base name of the entry. */
+  name: string
+  /** Directory or regular file. */
+  kind: 'directory' | 'file'
+  /** Regular-file byte size when available. */
+  size?: number
+}
+
+/** One commit in the Workspace's Git history. */
+export interface WorkspaceCommit {
+  /** Stable Git object id used as the pagination cursor. */
+  id: GitCommitId
+  /** Commit subject shown in the collapsed history row. */
+  summary: string
+  /** Full commit message shown when the row is expanded. */
+  message: string
+  /** Commit author timestamp in ISO-8601 form. */
+  authoredAt: string
+}
+
+/** Workspace file listing response. */
+export interface WorkspaceFilesPage {
+  entries: WorkspaceFileEntry[]
+  truncated: boolean
+}
+
+/** Workspace Git history response. */
+export interface WorkspaceCommitsPage {
+  commits: WorkspaceCommit[]
+  hasMore: boolean
+  /** Cursor to pass as `before` for the next older page. */
+  nextBefore?: GitCommitId
+}
+
+/**
+ * Import the RPC types once above the domain declarations; this duplicate-free
+ * local alias keeps the method signatures below easy to scan.
+ */
 /**
  * Wire-side workspace id brand. Deliberately re-declared here rather than
  * imported from dsh-workspace: api/ must stay browser-importable with zero
@@ -106,4 +153,20 @@ export interface WorkspaceApi {
    */
   archiveSession(request: RpcRequest<{ sessionId: SessionId }>):
   Promise<RpcResponse<{ archivedSessionIds: SessionId[] }>>
+
+  /**
+   * Lists a bounded recursive view of the Workspace directory. The Host owns
+   * traversal limits and omits its `.git` metadata directory; the client never
+   * sends arbitrary paths for this capability.
+   */
+  files(request: RpcRequest<{ workspaceId: WorkspaceId }>):
+  Promise<RpcResponse<WorkspaceFilesPage>>
+
+  /**
+   * Returns one newest-first Git history page. `before` is the last commit id
+   * from the previous page and `limit` is a client display hint bounded by the
+   * Host.
+   */
+  commits(request: RpcRequest<{ workspaceId: WorkspaceId; before?: GitCommitId; limit?: number }>):
+  Promise<RpcResponse<WorkspaceCommitsPage>>
 }

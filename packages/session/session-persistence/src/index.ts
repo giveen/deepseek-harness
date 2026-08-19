@@ -22,6 +22,60 @@ export interface SessionPersistenceSnapshot {
   revision: SessionPersistenceRevision
 }
 
+/** One bounded page of persistence snapshots. */
+export interface SessionPersistenceSnapshotPage {
+  /** Snapshot rows in deterministic backend order. */
+  snapshots: SessionPersistenceSnapshot[]
+  /** Opaque cursor for the next page, when more rows remain. */
+  nextCursor?: string
+}
+
+/** One durable request to remove a session after its references are safe. */
+export interface SessionDeletionMark {
+  /** Session selected for a later sweep. */
+  id: SessionId
+  /** Unix epoch milliseconds when the mark was committed. */
+  markedAt: number
+  /** Optional operator-provided reason retained for maintenance diagnostics. */
+  reason?: string
+}
+
+/** Result of applying an idempotent deletion-mark request. */
+export interface SessionDeletionMarkResult {
+  /** Sessions newly marked by this request. */
+  marked: SessionId[]
+  /** Sessions that already had a durable mark. */
+  alreadyMarked: SessionId[]
+  /** Requested ids with no materialized session. */
+  missing: SessionId[]
+  /** Materialized sessions still bound to a live Session. */
+  skippedLive: SessionId[]
+}
+
+/** Result of one bounded deletion sweep. */
+export interface SessionDeletionSweepResult {
+  /** Sessions deleted, including their cascaded event rows and marks. */
+  deleted: SessionId[]
+  /** Marked sessions retained because they are still live. */
+  skippedLive: SessionId[]
+  /** Marked sessions retained because an unmarked child still names them. */
+  skippedReferenced: SessionId[]
+  /** Marks remaining after the sweep. */
+  remaining: number
+}
+
+/** Default page size for bounded persistence snapshot reads. */
+export const SESSION_PERSISTENCE_DEFAULT_PAGE_LIMIT = 100
+
+/** Maximum page size accepted by persistence snapshot paging and deletion sweeps. */
+export const SESSION_PERSISTENCE_MAX_PAGE_LIMIT = 500
+
+/** Default number of deletion marks considered by one sweep. */
+export const SESSION_PERSISTENCE_DEFAULT_SWEEP_LIMIT = 100
+
+/** Maximum number of deletion marks considered by one sweep. */
+export const SESSION_PERSISTENCE_MAX_SWEEP_LIMIT = 500
+
 /** Immutable logical session prepared from persistence or a live owner. */
 export interface SessionInspection {
   /** Validated immutable session metadata. */
@@ -238,6 +292,84 @@ export abstract class SessionPersistence extends Service {
    * @returns one header and opaque revision per materialized session without loading full logs.
    */
   abstract listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]>
+
+  /**
+   * Mark materialized sessions for a later deletion sweep. A provider may
+   * reject this capability when it cannot persist marks safely.
+   * @param _ids - sessions to mark; duplicates are reported once in input order.
+   * @param _reason - optional maintenance reason retained with each mark.
+   * @returns the idempotent mark result.
+   */
+  async markForDeletion(
+    _ids: readonly SessionId[],
+    _reason?: string,
+  ): Promise<SessionDeletionMarkResult> {
+    return Promise.reject(new Error('this session persistence backend does not support deletion marks'))
+  }
+
+  /**
+   * List durable deletion marks without loading session logs.
+   * @returns marks in the provider's deterministic maintenance order.
+   */
+  async listDeletionMarks(): Promise<SessionDeletionMark[]> {
+    return Promise.reject(new Error('this session persistence backend does not support deletion marks'))
+  }
+
+  /**
+   * Delete a bounded set of marked sessions after protecting live sessions and
+   * sessions still named by an unmarked child.
+   * @param _limit - maximum number of marks considered in this pass.
+   * @returns the deletion and protection results.
+   */
+  async sweepMarked(
+    _limit: number = SESSION_PERSISTENCE_DEFAULT_SWEEP_LIMIT,
+  ): Promise<SessionDeletionSweepResult> {
+    return Promise.reject(new Error('this session persistence backend does not support deletion marks'))
+  }
+
+  /**
+   * List persistence snapshots in bounded pages. Backends with a native
+   * keyset query may override this; the default preserves the service contract
+   * for third-party backends while keeping the cursor opaque to callers.
+   * @param limit - maximum number of snapshots in the page.
+   * @param cursor - cursor returned by the previous page, if any.
+   * @param signal - optional cancellation for backend listing work.
+   * @returns one bounded snapshot page.
+   */
+  async listSnapshotsPage(
+    limit: number = SESSION_PERSISTENCE_DEFAULT_PAGE_LIMIT,
+    cursor?: string,
+    signal?: AbortSignal,
+  ): Promise<SessionPersistenceSnapshotPage> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > SESSION_PERSISTENCE_MAX_PAGE_LIMIT) {
+      throw new TypeError(`persistence snapshot page limit must be an integer between 1 and ${SESSION_PERSISTENCE_MAX_PAGE_LIMIT}`)
+    }
+    const offset = cursor === undefined ? 0 : decodeSnapshotPageOffset(cursor)
+    const snapshots = await this.listSnapshots(signal)
+    signal?.throwIfAborted()
+    const page = snapshots.slice(offset, offset + limit)
+    return {
+      snapshots: page,
+      ...offset + page.length < snapshots.length
+        ? { nextCursor: encodeSnapshotPageOffset(offset + page.length) }
+        : {},
+    }
+  }
+}
+
+function encodeSnapshotPageOffset(offset: number): string {
+  return Buffer.from(JSON.stringify({ offset }), 'utf8').toString('base64url')
+}
+
+function decodeSnapshotPageOffset(cursor: string): number {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { offset?: unknown }
+    const offset = value.offset
+    if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) throw new Error('invalid offset')
+    return offset
+  } catch (error: unknown) {
+    throw new TypeError('persistence snapshot cursor is invalid', { cause: error })
+  }
 }
 
 export default SessionPersistence

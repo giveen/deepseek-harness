@@ -34,7 +34,7 @@ import { deriveEventMessage, foldSurface } from '@deepseek-ai/dsh-session/surfac
 import type {
   ApiProxy, ClientRequest, ClientResponse, HistoryEntry, HostFrame, MuxFrame, RpcReceipt,
   ModelProviderGroup, ModelSelection, RpcRequest, RpcResponse, RpcResult, ServerRequest, ServerResponse, SessionSummary,
-  ToolCallView, ToolEventView, ToolResultView, WorkspaceId, WorkspaceView,
+  ToolCallView, ToolEventView, ToolResultView, WorkspaceFilesPage, WorkspaceId, WorkspaceView,
 } from './api.ts'
 import type { RequestPayload, ResponseValue, RpcMethodMap } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { AbstractApiClient, RpcId, SESSION_SEARCH_RESULT_LIMIT } from './api.ts'
@@ -2695,6 +2695,24 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
         }
         return ok(request, { archivedSessionIds: [...archivedSessionIds] })
       },
+      files: (request) => {
+        const workspace = workspaces.find(candidate => candidate.workspaceId === request.payload.workspaceId)
+        if (workspace === undefined) return err<typeof request.payload, WorkspaceFilesPage>(request, { code: 'workspace-not-found', message: 'fixture workspace not found', details: { workspaceId: request.payload.workspaceId } })
+        return ok<typeof request.payload, WorkspaceFilesPage>(request, {
+          entries: [
+            { path: `${workspace.path}/README.md`, relativePath: 'README.md', name: 'README.md', kind: 'file', size: 128 },
+            { path: `${workspace.path}/src`, relativePath: 'src', name: 'src', kind: 'directory' },
+            { path: `${workspace.path}/src/index.ts`, relativePath: 'src/index.ts', name: 'index.ts', kind: 'file', size: 256 },
+          ],
+          truncated: false,
+        })
+      },
+      commits: request => Promise.resolve(ok(request, {
+        commits: [
+          { id: '0123456789abcdef0123456789abcdef01234567' as never, summary: 'Fixture commit', message: 'Fixture commit\n\nA deterministic history entry.', authoredAt: '2026-01-01T00:00:00.000Z' },
+        ],
+        hasMore: false,
+      })),
     },
     agentPresets: {
       // Both trusts appear, because a surface must present a locally authored
@@ -3106,6 +3124,8 @@ export class FixtureApiClient extends AbstractApiClient {
       case 'workspace.insertBefore': return this.api.workspace.insertBefore(request)
       case 'workspace.insertSessionBefore': return this.api.workspace.insertSessionBefore(request)
       case 'workspace.archiveSession': return this.api.workspace.archiveSession(request)
+      case 'workspace.files': return this.api.workspace.files(request)
+      case 'workspace.commits': return this.api.workspace.commits(request)
       case 'skill.list': return this.api.skills.list(request)
       case 'agentPreset.list': return this.api.agentPresets.list(request)
       case 'agentPreset.select': return this.api.agentPresets.select(request)

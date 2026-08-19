@@ -3,7 +3,7 @@
 // deferred-controlled timing). Streams are hand pumps: pushMux/pushHost.
 import type {
   HostFrame, IApiClient, ModelSelection, MuxFrame,
-  RpcRequest, RpcResponse, SessionId, SessionModels, SessionSearchItem, SkillEntry, WorkspaceId,
+  RpcRequest, RpcResponse, SessionId, SessionModels, SessionSearchItem, SkillEntry, WorkspaceCommitsPage, WorkspaceFilesPage, WorkspaceId,
 } from '../src/client/api.ts'
 import { RpcId } from '../src/client/api.ts'
 
@@ -168,6 +168,8 @@ export class FakeApiClient implements IApiClient {
     archiveSession: (payload: unknown) => this.record('workspace.archiveSession', payload, Promise.resolve(ok({
       archivedSessionIds: [(payload as { sessionId: SessionId }).sessionId],
     }))),
+    files: (payload: unknown) => this.record('workspace.files', payload, Promise.resolve(ok<WorkspaceFilesPage>({ entries: [], truncated: false }))),
+    commits: (payload: unknown) => this.record('workspace.commits', payload, Promise.resolve(ok<WorkspaceCommitsPage>({ commits: [], hasMore: false }))),
   }
 
   // Payloads stay `unknown` (lint-lane note above); response rows are the real

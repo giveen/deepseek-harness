@@ -7,7 +7,8 @@
 import { z } from 'zod'
 import type { RequestPayload, ResponseValue } from './rpc-map.ts'
 import type { Wire } from './rpc.schema.ts'
-import type { WorkspaceView } from './workspace.ts'
+import type { WorkspaceCommit, WorkspaceFileEntry, WorkspaceView } from './workspace.ts'
+import type { GitCommitId } from './workspace.ts'
 import { sessionIdSchema, workspaceIdSchema } from './sessions.schema.ts'
 
 export { workspaceIdSchema } from './sessions.schema.ts'
@@ -98,3 +99,48 @@ export const workspaceArchiveSessionRequestSchema = z.object({
 export const workspaceArchiveSessionValueSchema = z.object({
   archivedSessionIds: z.array(sessionIdSchema),
 }) satisfies z.ZodType<Wire<ResponseValue<'workspace.archiveSession'>>>
+
+/** Branded Git commit id parsed at the wire boundary. */
+export const gitCommitIdSchema = z.string().regex(/^[0-9a-f]{7,64}$/i) as unknown as z.ZodType<Wire<GitCommitId>>
+
+/** Workspace file entry. */
+export const workspaceFileEntrySchema = z.object({
+  path: z.string(),
+  relativePath: z.string(),
+  name: z.string(),
+  kind: z.enum(['directory', 'file']),
+  size: z.number().int().nonnegative().optional(),
+}) satisfies z.ZodType<Wire<WorkspaceFileEntry>>
+
+/** workspace.files request payload. */
+export const workspaceFilesRequestSchema = z.object({
+  workspaceId: workspaceIdSchema,
+}) satisfies z.ZodType<Wire<RequestPayload<'workspace.files'>>>
+
+/** workspace.files response value. */
+export const workspaceFilesValueSchema = z.object({
+  entries: z.array(workspaceFileEntrySchema),
+  truncated: z.boolean(),
+}) satisfies z.ZodType<Wire<ResponseValue<'workspace.files'>>>
+
+/** Workspace Git commit row. */
+export const workspaceCommitSchema: z.ZodType<Wire<WorkspaceCommit>> = z.object({
+  id: gitCommitIdSchema,
+  summary: z.string(),
+  message: z.string(),
+  authoredAt: z.string(),
+})
+
+/** workspace.commits request payload. */
+export const workspaceCommitsRequestSchema: z.ZodType<Wire<RequestPayload<'workspace.commits'>>> = z.object({
+  workspaceId: workspaceIdSchema,
+  before: gitCommitIdSchema.optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+})
+
+/** workspace.commits response value. */
+export const workspaceCommitsValueSchema: z.ZodType<Wire<ResponseValue<'workspace.commits'>>> = z.object({
+  commits: z.array(workspaceCommitSchema),
+  hasMore: z.boolean(),
+  nextBefore: gitCommitIdSchema.optional(),
+})

@@ -1615,6 +1615,12 @@ export interface Config {
    * (network mounts). See {@link JournalMode}.
    */
   journalMode?: JournalMode
+  /** SQLite connection lock wait in milliseconds. */
+  busyTimeoutMs?: number
+  /** SQLite synchronous durability level; `full` is the default. */
+  synchronous?: SynchronousMode
+  /** WAL automatic-checkpoint threshold in pages; zero disables it. */
+  walAutocheckpointPages?: number
   /** Maximum cold Session preparations retained for history-to-resume reuse. */
   preparedSessionCacheSize?: number
   /** Fixed live-event coalescing window; not a backend completion deadline. */
@@ -1630,9 +1636,12 @@ export interface Config {
  * backend promises.
  */
 export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
+
+/** SQLite connection durability levels supported by the session backend. */
+export type SynchronousMode = 'full' | 'normal'
 ```
 
-Source: [`packages/session/session-persistence-sqlite/src/index.ts:70`](../packages/session/session-persistence-sqlite/src/index.ts)
+Source: [`packages/session/session-persistence-sqlite/src/index.ts:91`](../packages/session/session-persistence-sqlite/src/index.ts)
 
 <a id="deepseek-aidsh-session-projection-cache"></a>
 
@@ -1682,6 +1691,12 @@ export interface Config extends SessionQueryConfig {
   openAt?: OpenAt
   /** SQLite journal mode. Defaults to `wal`. */
   journalMode?: JournalMode
+  /** SQLite connection lock wait in milliseconds. */
+  busyTimeoutMs?: number
+  /** SQLite synchronous durability level; `full` is the default. */
+  synchronous?: SynchronousMode
+  /** WAL automatic-checkpoint threshold in pages; zero disables it. */
+  walAutocheckpointPages?: number
   /** Page size when a request omits `limit`. At most `Number.MAX_SAFE_INTEGER - 1`; defaults to 20. */
   defaultLimit?: number
   /** Largest accepted page size. At most `Number.MAX_SAFE_INTEGER - 1`; defaults to 100. */
@@ -1697,11 +1712,14 @@ export type OpenAt = 'startup' | 'first-search' | 'never'
 
 /** Supported SQLite journal modes. */
 export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
+
+/** SQLite connection durability levels supported by the derived index. */
+export type SynchronousMode = 'full' | 'normal'
 ```
 
 Depends on: [`SessionQueryConfig`](../packages/session-query/session-query/src/index.ts)
 
-Source: [`packages/session-query/session-query-sqlite/src/index.ts:89`](../packages/session-query/session-query-sqlite/src/index.ts)
+Source: [`packages/session-query/session-query-sqlite/src/index.ts:111`](../packages/session-query/session-query-sqlite/src/index.ts)
 
 <a id="deepseek-aidsh-session-reference"></a>
 
@@ -2013,6 +2031,12 @@ export interface Config {
    * {@link JournalMode}.
    */
   journalMode?: JournalMode
+  /** SQLite connection lock wait in milliseconds. */
+  busyTimeoutMs?: number
+  /** SQLite synchronous durability level; `full` is the default. */
+  synchronous?: SynchronousMode
+  /** WAL automatic-checkpoint threshold in pages; zero disables it. */
+  walAutocheckpointPages?: number
 }
 
 /**
@@ -2023,9 +2047,12 @@ export interface Config {
  * contradicts the durability clause of the KV backend contract.
  */
 export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
+
+/** SQLite connection durability levels supported by the KV backend. */
+export type SynchronousMode = 'full' | 'normal'
 ```
 
-Source: [`packages/storage/storage-sqlite/src/index.ts:24`](../packages/storage/storage-sqlite/src/index.ts)
+Source: [`packages/storage/storage-sqlite/src/index.ts:53`](../packages/storage/storage-sqlite/src/index.ts)
 
 <a id="deepseek-aidsh-subagent-acp"></a>
 

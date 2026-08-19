@@ -16,6 +16,8 @@ All three surfaces (`current`, `shadowed`, and `log-only`) are searchable by def
 
 The service requires `ctx.sessions` and observes optional `ctx.sessionPersistence` dynamically. One serialized state machine compares source-qualified lightweight durable snapshot revisions, non-mutatingly inspects only new or changed logs, extracts shared semantic documents, reconciles changes transactionally, and runs the query. Session queries never invoke the persistence backend's crash-repairing `load()`; an owner attaching during inspection cannot mutate its log, and the stable-observation retry makes the result live-preferred. The TEMP live row still records persisted availability, and the durable base refreshes after that live owner detaches. Repeated queries and an unchanged same-store reopen perform no full durable-log inspection; switching stores, or observing new, changed, deleted, or externally load-repaired sources, reconciles on the next stable observation. Source or transaction failure commits nothing, and the next search retries.
 
+The derived index connection waits up to `busyTimeoutMs` (default `5000` ms) for a lock and uses `synchronous=FULL` by default. `synchronous=NORMAL` is an explicit deployment choice; the setting is connection-local and does not alter the canonical session database. SQLite's WAL auto-checkpoint threshold is explicit as `walAutocheckpointPages` (default `1000` pages); setting it to `0` delegates checkpoint timing to host maintenance.
+
 `openAt: startup` is the default: service activation imports `node:sqlite`, opens the handle, and fails before publication when the index is invalid. `openAt: first-search` publishes the service as ACTIVE without importing the SQLite module or opening a handle; the first concurrent searches share one readiness promise, and disposal before any search opens nothing. This mode supports compositions that need clean Node 22 startup output by deferring SQLite's experimental warning until the first actual search; it does not suppress a warning at that point. An invalid database likewise fails the first search instead of service activation. `openAt: never` turns full-text search off for the deployment: `searchSessions` and `searchEvents` fail with `SESSION_QUERY_SEARCH_DISABLED` before any request normalization, node:sqlite is never imported or opened, and no source observation or reconciliation runs, while every inherited exact read, filter, and trace on `ctx.sessionQuery` keeps working.
 
 Persisted FTS rows live in a dedicated derived database. Connection-local TEMP tables hold live rows, which shadow the durable base for the same session and reveal it when the live owner disappears. Unmounting persistence hides durable rows without discarding the cache; remounting reconciles it. Closing or reopening the database drops every live overlay while retaining persisted rows.
@@ -29,11 +31,18 @@ The database is disposable but reset is guarded: every recognized schema version
 | `path` | required | Dedicated derived-index SQLite path; `:memory:` is supported. Missing filesystem paths are created owner-only on POSIX filesystems. |
 | `openAt` | `startup` | `startup` opens before service activation completes; `first-search` defers the SQLite module and handle until search; `never` disables full-text search (typed `SESSION_QUERY_SEARCH_DISABLED` failures) while inherited reads stay available. |
 | `journalMode` | `wal` | `wal`, `delete`, `truncate`, or `persist`. |
+| `busyTimeoutMs` | `5000` | Maximum SQLite lock wait in milliseconds; accepted range is 1..120000. |
+| `synchronous` | `full` | SQLite connection durability level: `full` or explicit `normal`. |
+| `walAutocheckpointPages` | `1000` | WAL auto-checkpoint threshold in pages; `0` disables automatic checkpoints and the accepted maximum is `1000000`. |
 | `defaultLimit` | `20` | Page size when a request omits `limit`; at most `Number.MAX_SAFE_INTEGER - 1`. |
 | `maxLimit` | `100` | Largest accepted request page size; at most `Number.MAX_SAFE_INTEGER - 1`. |
 | `snippetChars` | `240` | Maximum snippet length in Unicode code points. |
 | `readWindowMax` | `50` | Maximum `before` or `after` raw-event count for inherited `readEvent()`. |
 | `persistedInspectConcurrency` | `4` | Maximum concurrent persisted-log inspections for inherited batch reads; must be a positive safe integer. |
+
+## Diagnostics and backups
+
+`SqliteSessionQueryEngine.checkIntegrity()` runs SQLite's `integrity_check` and `foreign_key_check` pragmas. `backup(destination)` uses the online backup API to produce a consistent derived-index image while the source remains usable; an existing destination is replaced. `checkpoint(mode?)` runs a serialized `PASSIVE` checkpoint by default and returns SQLite's progress counters. Reconciliation requests persistence snapshots through bounded pages, while preserving the stable before/after observation check. These are host-side maintenance APIs and are unavailable when `openAt: 'never'` disables the SQLite index.
 
 ## Tokenizer and limits
 
@@ -53,5 +62,7 @@ None; this package neither assembles nor sends a provider request.
 
 - **No caller authorization** — this is a trusted context-wide service; a model tool or UI must enforce its own access policy.
 - **Synchronous query execution** — `DatabaseSync` blocks the JavaScript thread during MATCH execution and cannot interrupt a statement already running.
+- **Lock handling is bounded** — a lock held longer than `busyTimeoutMs` fails the search; the service does not retry a stale query after a lock timeout.
 - **Token recall, not arbitrary substrings** — the `unicode61` tokenizer does not match substrings inside a larger token; use `filterEvents()` for literal scans.
 - **Single-owner derived index** — one service in one process must own each index path; external writers and multi-process sharing are unsupported.
+- **Checkpoint scheduling is host-owned when disabled** — `walAutocheckpointPages: 0` prevents automatic checkpoints but does not start a replacement timer; callers must invoke `checkpoint()` during an owned maintenance window.

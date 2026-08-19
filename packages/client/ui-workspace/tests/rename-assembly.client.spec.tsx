@@ -33,6 +33,7 @@ async function createRuntime(): Promise<SlotTestRuntime> {
   const runtime = await SlotTestRuntime.create()
   const locale = new LocaleRuntime(runtime.ctx)
   runtime.provide('locale', locale)
+  runtime.provide('connection', { api: { workspace: { files: vi.fn(), commits: vi.fn() } }, isLoopback: true })
   runtime.slots.installLocale(locale)
   return runtime
 }

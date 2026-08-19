@@ -9,7 +9,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { DatabaseSync } from 'node:sqlite'
+import { backup as sqliteBackup, DatabaseSync } from 'node:sqlite'
 import type { SessionEvent, SessionId, SessionHeader, SurfaceOp } from '@deepseek-ai/dsh-session'
 
 /**
@@ -17,7 +17,7 @@ import type { SessionEvent, SessionId, SessionHeader, SurfaceOp } from '@deepsee
  * layout; orthogonal to a session's own `version` (which versions the EVENT
  * vocabulary, stored per session in the `sessions` row).
  */
-export const SCHEMA_VERSION = 15
+export const SCHEMA_VERSION = 16
 
 /** SQLite application id protecting unrelated databases from persistence writes. */
 export const SESSION_PERSISTENCE_SQLITE_APPLICATION_ID = 0x44534850
@@ -45,6 +45,13 @@ export interface SessionRow {
   agent_preset: string | null
 }
 
+/** A durable deletion mark row. */
+export interface DeletionMarkRow {
+  session_id: string
+  marked_at: number
+  reason: string | null
+}
+
 /** An `events` table row: one `SessionEvent` mapped 1:1 (`data` is JSON text). */
 export interface EventRow {
   seq: number
@@ -69,6 +76,67 @@ export interface EventRow {
  */
 export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
 
+/** SQLite connection durability levels supported by the session backend. */
+export type SynchronousMode = 'full' | 'normal'
+
+/** SQLite checkpoint modes accepted by `PRAGMA wal_checkpoint`. */
+export type CheckpointMode = 'passive' | 'full' | 'restart' | 'truncate'
+
+/** Default maximum wait for SQLite locks before an operation fails. */
+export const DEFAULT_BUSY_TIMEOUT_MS = 5_000
+
+/** Maximum configurable SQLite lock wait. */
+export const MAX_BUSY_TIMEOUT_MS = 120_000
+
+/** Default WAL automatic-checkpoint threshold in pages. */
+export const DEFAULT_WAL_AUTOCHECKPOINT_PAGES = 1_000
+
+/** Maximum configurable WAL automatic-checkpoint threshold in pages. */
+export const MAX_WAL_AUTOCHECKPOINT_PAGES = 1_000_000
+
+/** Default connection durability level. */
+export const DEFAULT_SYNCHRONOUS_MODE: SynchronousMode = 'full'
+
+/** Result returned by one WAL checkpoint operation. */
+export interface SqliteCheckpointReport {
+  /** Requested checkpoint mode. */
+  mode: CheckpointMode
+  /** Non-zero when SQLite could not complete the requested checkpoint. */
+  busy: number
+  /** WAL frames remaining after the checkpoint attempt. */
+  log: number
+  /** WAL frames copied into the database by the checkpoint attempt. */
+  checkpointed: number
+}
+
+/** Connection options applied before the database is exposed to the backend. */
+export interface SqliteOpenOptions {
+  /** Maximum lock wait in milliseconds. */
+  busyTimeoutMs?: number | undefined
+  /** SQLite synchronous level. */
+  synchronous?: SynchronousMode | undefined
+  /** WAL automatic-checkpoint threshold in pages; zero disables it. */
+  walAutocheckpointPages?: number | undefined
+}
+
+/** Result of a database integrity diagnostic. */
+export interface SqliteIntegrityReport {
+  /** Whether both integrity checks reported a clean database. */
+  ok: boolean
+  /** Results returned by `PRAGMA integrity_check`. */
+  integrityCheck: readonly string[]
+  /** Rows returned by `PRAGMA foreign_key_check`. */
+  foreignKeyViolations: readonly ForeignKeyViolation[]
+}
+
+/** One row returned by SQLite's foreign-key diagnostic. */
+export interface ForeignKeyViolation {
+  table: string
+  rowid: number
+  parent: string
+  fkid: number
+}
+
 /**
  * Open the database and apply its schema and pragmas. An empty database with a
  * zero `user_version` is initialized at {@link SCHEMA_VERSION}; a nonempty
@@ -76,12 +144,21 @@ export type JournalMode = 'wal' | 'delete' | 'truncate' | 'persist'
  * being migrated in place.
  * @param path - the SQLite database file to open (created when absent).
  * @param journalMode - validated journal pragma.
+ * @param options - connection timeout, synchronous durability, and WAL checkpoint settings.
  * @returns the open handle with pragmas applied and all three tables ensured.
  */
-export function openDatabase(path: string, journalMode: JournalMode): DatabaseSync {
-  const db = new DatabaseSync(path)
+export function openDatabase(
+  path: string,
+  journalMode: JournalMode,
+  options: SqliteOpenOptions = {},
+): DatabaseSync {
+  const busyTimeoutMs = options.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS
+  const synchronous = options.synchronous ?? DEFAULT_SYNCHRONOUS_MODE
+  const walAutocheckpointPages = options.walAutocheckpointPages ?? DEFAULT_WAL_AUTOCHECKPOINT_PAGES
+  assertOpenOptions(busyTimeoutMs, synchronous, walAutocheckpointPages)
+  const db = new DatabaseSync(path, { timeout: busyTimeoutMs })
   try {
-    configureDatabase(db, path, journalMode)
+    configureDatabase(db, path, journalMode, synchronous, walAutocheckpointPages)
     return db
   } catch (error: unknown) {
     db.close()
@@ -89,7 +166,13 @@ export function openDatabase(path: string, journalMode: JournalMode): DatabaseSy
   }
 }
 
-function configureDatabase(db: DatabaseSync, path: string, journalMode: JournalMode): void {
+function configureDatabase(
+  db: DatabaseSync,
+  path: string,
+  journalMode: JournalMode,
+  synchronous: SynchronousMode,
+  walAutocheckpointPages: number,
+): void {
   db.exec('PRAGMA foreign_keys = ON')
   let began = false
   try {
@@ -133,6 +216,12 @@ function configureDatabase(db: DatabaseSync, path: string, journalMode: JournalM
         revision         INTEGER NOT NULL
       ) STRICT;
 
+      CREATE TABLE IF NOT EXISTS session_deletion_marks (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        marked_at  INTEGER NOT NULL,
+        reason     TEXT
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS events (
         session_id        TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         seq               INTEGER NOT NULL,
@@ -169,6 +258,70 @@ function configureDatabase(db: DatabaseSync, path: string, journalMode: JournalM
   // The validated union is safe to interpolate into a non-bindable PRAGMA.
   // Apply it only after ownership validation and initialization commit.
   db.exec(`PRAGMA journal_mode = ${journalMode.toUpperCase()}`)
+  db.exec(`PRAGMA synchronous = ${synchronous.toUpperCase()}`)
+  db.exec(`PRAGMA wal_autocheckpoint = ${walAutocheckpointPages}`)
+}
+
+function assertOpenOptions(
+  busyTimeoutMs: number,
+  synchronous: SynchronousMode,
+  walAutocheckpointPages: number,
+): void {
+  if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 1 || busyTimeoutMs > MAX_BUSY_TIMEOUT_MS) {
+    throw new TypeError(`busyTimeoutMs must be an integer between 1 and ${MAX_BUSY_TIMEOUT_MS}`)
+  }
+  const synchronousValue = synchronous as string
+  if (synchronousValue !== 'full' && synchronousValue !== 'normal') {
+    throw new TypeError(`synchronous must be "full" or "normal", got "${synchronousValue}"`)
+  }
+  if (
+    !Number.isSafeInteger(walAutocheckpointPages)
+    || walAutocheckpointPages < 0
+    || walAutocheckpointPages > MAX_WAL_AUTOCHECKPOINT_PAGES
+  ) {
+    throw new TypeError(`walAutocheckpointPages must be an integer between 0 and ${MAX_WAL_AUTOCHECKPOINT_PAGES}`)
+  }
+}
+
+/**
+ * Run one bounded WAL checkpoint on an open database.
+ * @param db - open SQLite connection.
+ * @param mode - checkpoint strategy.
+ * @returns SQLite's checkpoint progress counters.
+ */
+export function checkpointDatabase(db: DatabaseSync, mode: CheckpointMode = 'passive'): SqliteCheckpointReport {
+  const row = db.prepare(`PRAGMA wal_checkpoint(${mode.toUpperCase()})`).get() as {
+    busy: number
+    log: number
+    checkpointed: number
+  }
+  return { mode, busy: row.busy, log: row.log, checkpointed: row.checkpointed }
+}
+
+/**
+ * Run SQLite's structural and foreign-key diagnostics on an open connection.
+ * @param db - open database handle.
+ * @returns diagnostic rows without mutating the database.
+ */
+export function checkDatabaseIntegrity(db: DatabaseSync): SqliteIntegrityReport {
+  const integrityRows = db.prepare('PRAGMA integrity_check').all() as Array<{ integrity_check: string }>
+  const integrityCheck = integrityRows.map(row => row.integrity_check)
+  const foreignKeyViolations = db.prepare('PRAGMA foreign_key_check').all() as unknown as ForeignKeyViolation[]
+  return {
+    ok: integrityCheck.length === 1 && integrityCheck[0] === 'ok' && foreignKeyViolations.length === 0,
+    integrityCheck,
+    foreignKeyViolations,
+  }
+}
+
+/**
+ * Back up an open database through SQLite's online backup API.
+ * @param db - open source database handle.
+ * @param destination - destination database path.
+ * @returns the number of copied pages.
+ */
+export async function backupDatabase(db: DatabaseSync, destination: string): Promise<number> {
+  return sqliteBackup(db, destination)
 }
 
 /**

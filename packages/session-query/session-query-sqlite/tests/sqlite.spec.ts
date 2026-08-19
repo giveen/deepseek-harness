@@ -334,6 +334,23 @@ describe('SQLite session search', () => {
       .resolves.toMatchObject({ items: [{ header: { ...session.header, seedLength: 1 }, live: true, persisted: false }] })
   })
 
+  it('appends only the new FTS tail when a live session grows', async () => {
+    const ctx = await liveContext()
+    const session = ctx.sessions.create(SessionId('incremental-live'), { seed: messageEvents('first needle') })
+    await ctx.sessionQuery.searchEvents({ sessionId: session.id, query: 'needle' })
+    const db = (ctx.sessionQuery as unknown as { _db: DatabaseSync })._db
+    const before = db.prepare('SELECT rowid, seq FROM temp.live_docs WHERE session_id = ? ORDER BY seq').all(session.id) as Array<{ rowid: number; seq: number }>
+    expect(before).toHaveLength(1)
+
+    session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: 'second needle' }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    await ctx.sessionQuery.searchEvents({ sessionId: session.id, query: 'second' })
+    const after = db.prepare('SELECT rowid, seq FROM temp.live_docs WHERE session_id = ? ORDER BY seq').all(session.id) as Array<{ rowid: number; seq: number }>
+    expect(after).toHaveLength(2)
+    expect(after[0]).toEqual(before[0])
+  })
+
   it('excludes assistant reasoning while indexing visible answer text', async () => {
     const ctx = await liveContext()
     const session = ctx.sessions.create(SessionId('reasoning'))
@@ -674,6 +691,10 @@ describe('SQLite session search', () => {
       { path: ':memory:', defaultLimit: 3, maxLimit: 2 },
       { path: ':memory:', openAt: 'later' },
       { path: ':memory:', journalMode: 'memory' },
+      { path: ':memory:', busyTimeoutMs: 0 },
+      { path: ':memory:', busyTimeoutMs: 120_001 },
+      { path: ':memory:', synchronous: 'off' },
+      { path: ':memory:', walAutocheckpointPages: 1_000_001 },
     ]) {
       const direct = new Context()
       await direct.plugin(SessionStore)
@@ -1219,6 +1240,47 @@ describe('SQLite reconciliation and source lifecycle', () => {
 })
 
 describe('SQLite schema, cancellation, and real persistence integration', () => {
+  it('runs integrity diagnostics and creates an online backup', async () => {
+    const path = await temporaryPath()
+    const ctx = await liveContext({ path })
+    await ctx.sessionQuery.searchSessions({ query: 'needle' })
+    const engine = ctx.sessionQuery as SqliteSessionQueryEngine
+    await expect(engine.checkIntegrity()).resolves.toMatchObject({
+      ok: true,
+      integrityCheck: ['ok'],
+      foreignKeyViolations: [],
+    })
+    await expect(engine.checkpoint()).resolves.toMatchObject({ mode: 'passive', busy: 0 })
+    const destination = join(dirname(path), 'backup.db')
+    await expect(engine.backup(destination)).resolves.toBeGreaterThan(0)
+    const copy = new DatabaseSync(destination)
+    expect((copy.prepare('PRAGMA application_id').get() as { application_id: number }).application_id)
+      .toBe(0x44534851)
+    copy.close()
+    await engine.close()
+  })
+
+  it('uses FULL synchronous durability by default and allows NORMAL explicitly', async () => {
+    const path = await temporaryPath()
+    const ctx = await liveContext({ path })
+    await ctx.sessionQuery.searchSessions({ query: 'needle' })
+    const engine = ctx.sessionQuery as SqliteSessionQueryEngine
+    const db = (engine as unknown as { _db: DatabaseSync })._db
+    expect((db.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous).toBe(2)
+    expect((db.prepare('PRAGMA wal_autocheckpoint').get() as { wal_autocheckpoint: number }).wal_autocheckpoint).toBe(1_000)
+    expect((db.prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout).toBe(5_000)
+    await engine.close()
+
+    const normalPath = await temporaryPath('normal.db')
+    const normal = await liveContext({ path: normalPath, synchronous: 'normal', busyTimeoutMs: 1_234 })
+    await normal.sessionQuery.searchSessions({ query: 'needle' })
+    const normalEngine = normal.sessionQuery as SqliteSessionQueryEngine
+    const normalDb = (normalEngine as unknown as { _db: DatabaseSync })._db
+    expect((normalDb.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous).toBe(1)
+    expect((normalDb.prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout).toBe(1_234)
+    await normalEngine.close()
+  })
+
   it('creates a new database and WAL sidecars owner-only without changing its parent mode', async () => {
     if (process.platform === 'win32') return
     const path = await temporaryPath()

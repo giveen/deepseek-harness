@@ -4,7 +4,7 @@
 
 事件日志的**持久性 seam**。[session.md](session.md) 描述了内存中的 `Session`：仅追加的 `SessionEvent` 日志即为真源。本页描述如何使该日志持久化：抽象的 `SessionPersistence` 服务、它的后端、flush 检查点、崩溃恢复，以及随日志一同存储的元数据头。日志承载的事件词汇在生成的[持久化日志事件目录](../persistence-catalog.md)中逐项列举。
 
-该 seam 是一个[能力 seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.md)：一个抽象服务（[dsh-session-persistence](../../packages/session/session-persistence)，`ctx.sessionPersistence`）在现有 `SessionEvent` 上定义 locate/create/append、可复用的 Session 准备流程、逻辑 load/inspect、物理后缀读取，以及轻量的 list/snapshot 观察——**没有平行的持久化事件类型**——以及两个实现同一约定的可互换后端。见 [session-persistence Agent Note](../../.agents/notes/implemented/architecture/2026-06-14-session-persistence.md)。
+该 seam 是一个[能力 seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.md)：一个抽象服务（[dsh-session-persistence](../../packages/session/session-persistence)，`ctx.sessionPersistence`）在现有 `SessionEvent` 上定义 locate/create/append、可复用的 Session 准备流程、逻辑 load/inspect、物理后缀读取、轻量的 list/snapshot 观察，以及可选的标记与清扫保留操作——**没有平行的持久化事件类型**——并由两个实现同一约定的可互换后端提供。默认保留方法会明确失败；SQLite 负责持久化标记和有界清扫。见 [session-persistence Agent Note](../../.agents/notes/implemented/architecture/2026-06-14-session-persistence.md)。
 
 ## flush 检查点
 
@@ -233,7 +233,7 @@ interface SessionPersistenceSnapshot {
 两者都实现同一个抽象 `SessionPersistence`（在 `SessionEvent` 上执行 locate/create/append/prepare/load/inspect/readFrom/list/listSnapshots，观察方法可选支持取消），并通过共享的 `runPersistenceContract` 套件：
 
 - **[dsh-session-persistence-jsonl](../../packages/session/session-persistence-jsonl)**——每个会话一份仅追加的逻辑 JSONL 日志，默认存储为带 checksum 的连续 Zstandard frame，也可配置为原始行；支持崩溃安全的原子写入、被中断轮次的恢复以及读取/回放路径。
-- **[dsh-session-persistence-sqlite](../../packages/session/session-persistence-sqlite)**：基于 `node:sqlite`，每个 `SessionEvent` 一行。行字段 `(session_id, seq, type, time, data, source_event_seqs, surface_op)` 与事件 1:1 映射（包含可选的 surface 元数据），因此没有需要保持同步的并行持久化 schema。
+- **[dsh-session-persistence-sqlite](../../packages/session/session-persistence-sqlite)**：基于 `node:sqlite`，每个 `SessionEvent` 一行。行字段 `(session_id, seq, type, time, data, source_event_seqs, surface_op)` 与事件 1:1 映射（包含可选的 surface 元数据），因此没有需要保持同步的并行持久化 schema。连接默认使用 `synchronous=FULL`、5 秒原生 busy timeout 和显式的 1000 页 WAL 自动 checkpoint 阈值，seek 后缀读取在一个事务中完成，并提供 Host 侧完整性、checkpoint、在线备份诊断和有界 keyset 快照分页，还为非活跃、无未标记 child 引用的会话提供明确的标记与清扫保留操作。附件和 projection 清理仍需独立处理。
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -377,9 +377,43 @@ abstract list(signal?: AbortSignal): Promise<SessionHeader[]>
  * @returns one header and opaque revision per materialized session without loading full logs.
  */
 abstract listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]>
+
+/**
+ * Mark materialized sessions for a later deletion sweep. A provider may
+ * reject this capability when it cannot persist marks safely.
+ * @param _ids - sessions to mark; duplicates are reported once in input order.
+ * @param _reason - optional maintenance reason retained with each mark.
+ * @returns the idempotent mark result.
+ */
+async markForDeletion( _ids: readonly SessionId[], _reason?: string, ): Promise<SessionDeletionMarkResult>
+
+/**
+ * List durable deletion marks without loading session logs.
+ * @returns marks in the provider's deterministic maintenance order.
+ */
+async listDeletionMarks(): Promise<SessionDeletionMark[]>
+
+/**
+ * Delete a bounded set of marked sessions after protecting live sessions and
+ * sessions still named by an unmarked child.
+ * @param _limit - maximum number of marks considered in this pass.
+ * @returns the deletion and protection results.
+ */
+async sweepMarked( _limit: number = SESSION_PERSISTENCE_DEFAULT_SWEEP_LIMIT, ): Promise<SessionDeletionSweepResult>
+
+/**
+ * List persistence snapshots in bounded pages. Backends with a native
+ * keyset query may override this; the default preserves the service contract
+ * for third-party backends while keeping the cursor opaque to callers.
+ * @param limit - maximum number of snapshots in the page.
+ * @param cursor - cursor returned by the previous page, if any.
+ * @param signal - optional cancellation for backend listing work.
+ * @returns one bounded snapshot page.
+ */
+async listSnapshotsPage( limit: number = SESSION_PERSISTENCE_DEFAULT_PAGE_LIMIT, cursor?: string, signal?: AbortSignal, ): Promise<SessionPersistenceSnapshotPage>
 ```
 
 Types: [SessionEvent](session.md) · [SessionId](core.md)
 
-Source: [`packages/session/session-persistence/src/index.ts:84`](../../packages/session/session-persistence/src/index.ts)
+Source: [`packages/session/session-persistence/src/index.ts:138`](../../packages/session/session-persistence/src/index.ts)
 <!-- END GENERATED cordis-surface -->

@@ -4,8 +4,10 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, stat } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { execFile as execFileCallback } from 'node:child_process'
+import { mkdir, readdir, stat } from 'node:fs/promises'
+import { dirname, join, relative, sep } from 'node:path'
+import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { Agent, ModelSelection, ModelSelectionRef, AgentOptions, AgentStatus } from '@deepseek-ai/dsh-agent'
@@ -39,6 +41,7 @@ import type {
   ModelCatalogFailure, ModelProviderGroup,
   ModelReasoning, MuxFrame, PromptContentPart, QuestionResponsePayload, SessionListMetadata, SessionProjectionsBlock, SessionSearchItem,
   QueuedInboxItem, SessionSummary, SettingsNamespaceView, SubagentAddress, JobView, ToolEventView,
+  GitCommitId, WorkspaceCommit, WorkspaceCommitsPage, WorkspaceFileEntry, WorkspaceFilesPage,
   WorkspaceId, WorkspaceView,
 } from './api/index.ts'
 import {
@@ -111,6 +114,13 @@ import { canOpenNativePath, openNativePath, openNativeTextFile } from './native-
 
 /** Page size when history is called without maxMessages. */
 const DEFAULT_MAX_MESSAGES = 50
+const execFile = promisify(execFileCallback)
+/** Maximum recursive file entries returned by one Workspace viewer load. */
+const WORKSPACE_FILE_ENTRY_LIMIT = 2_000
+/** Maximum directory depth traversed by the Workspace viewer. */
+const WORKSPACE_FILE_DEPTH_LIMIT = 32
+/** Default Git history page size when the client omits one. */
+const DEFAULT_WORKSPACE_COMMIT_PAGE_SIZE = 20
 
 /** Provider work budget: at most 100 calls and 2,000 inspected hits. */
 const SESSION_SEARCH_PROVIDER_CALL_LIMIT = 100
@@ -1065,6 +1075,91 @@ function changedWorkspaceView(workspaceId: string, value: unknown): WorkspaceVie
     sessionIds: [...record.sessionIds],
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+  }
+}
+
+/** Return a stable workspace-relative path using the Host platform separator. */
+function workspaceRelativePath(root: string, path: string): string {
+  return relative(root, path).split(sep).join('/')
+}
+
+/** Recursively collect a bounded Workspace file tree without following directory symlinks. */
+async function collectWorkspaceFiles(root: string): Promise<WorkspaceFilesPage> {
+  const entries: WorkspaceFileEntry[] = []
+  let truncated = false
+  const visit = async (directory: string, depth: number): Promise<void> => {
+    if (depth > WORKSPACE_FILE_DEPTH_LIMIT || entries.length >= WORKSPACE_FILE_ENTRY_LIMIT) {
+      truncated = true
+      return
+    }
+    const children = await readdir(directory, { withFileTypes: true })
+    children.sort((left, right) => left.name.localeCompare(right.name))
+    for (const child of children) {
+      if (child.name === '.git' || child.name === 'node_modules') continue
+      if (entries.length >= WORKSPACE_FILE_ENTRY_LIMIT) {
+        truncated = true
+        return
+      }
+      const path = join(directory, child.name)
+      const relativePath = workspaceRelativePath(root, path)
+      if (child.isDirectory()) {
+        entries.push({ path, relativePath, name: child.name, kind: 'directory' })
+        await visit(path, depth + 1)
+        continue
+      }
+      if (!child.isFile()) continue
+      let size: number | undefined
+      try {
+        size = (await stat(path)).size
+      } catch {
+        // A file removed during a refresh remains absent from the returned tree.
+        continue
+      }
+      entries.push({ path, relativePath, name: child.name, kind: 'file', size })
+    }
+  }
+  await visit(root, 0)
+  return { entries, truncated }
+}
+
+/** Parse one NUL-separated Git log record, preserving the full commit message. */
+function parseGitCommitRecord(record: string): WorkspaceCommit | undefined {
+  const fields = record.trimStart().split('\0')
+  const [id, authoredAt, summary, ...messageParts] = fields
+  if (id === undefined || authoredAt === undefined || summary === undefined) return undefined
+  if (!/^[0-9a-f]{7,64}$/i.test(id)) return undefined
+  const message = messageParts.join('\0').replace(/\r?\n$/, '')
+  return {
+    id: id as GitCommitId,
+    summary,
+    message,
+    authoredAt,
+  }
+}
+
+/** Read one newest-first Git history page without invoking a shell. */
+async function readWorkspaceCommits(
+  root: string,
+  before: GitCommitId | undefined,
+  requestedLimit: number | undefined,
+): Promise<WorkspaceCommitsPage> {
+  const limit = Math.min(Math.max(requestedLimit ?? DEFAULT_WORKSPACE_COMMIT_PAGE_SIZE, 1), 100)
+  const args = [
+    '-C', root, 'log', '--no-decorate', '--date=iso-strict', `--max-count=${limit + 1}`,
+    '--format=%H%x00%aI%x00%s%x00%B%x1e',
+    ...(before === undefined ? [] : [`${before}^`]),
+  ]
+  const { stdout } = await execFile('git', args, { maxBuffer: 2 * 1024 * 1024 })
+  const commits = stdout.split('\x1e')
+    .map(parseGitCommitRecord)
+    .filter((commit): commit is WorkspaceCommit => commit !== undefined)
+  const hasMore = commits.length > limit
+  const page = commits.slice(0, limit)
+  const last = page.at(-1)
+  return {
+    commits: page,
+    hasMore,
+    ...(hasMore && last !== undefined ? { nextBefore: last.id } : {}),
   }
 }
 
@@ -2860,6 +2955,38 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           })
         }
         return ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] })
+      },
+
+      async files(request) {
+        const workspace = ctx.workspaceRegistry.get(brandWorkspaceId(request.payload.workspaceId))
+        if (workspace === undefined) return workspaceNotFound(request, request.payload.workspaceId)
+        try {
+          return ok(request, await collectWorkspaceFiles(workspace.path))
+        } catch (error: unknown) {
+          return err(request, {
+            code: 'workspace-files-unavailable',
+            message: `workspace files are unavailable: ${error instanceof Error ? error.message : String(error)}`,
+            details: { workspaceId: request.payload.workspaceId },
+          })
+        }
+      },
+
+      async commits(request) {
+        const workspace = ctx.workspaceRegistry.get(brandWorkspaceId(request.payload.workspaceId))
+        if (workspace === undefined) return workspaceNotFound(request, request.payload.workspaceId)
+        try {
+          return ok(request, await readWorkspaceCommits(
+            workspace.path,
+            request.payload.before,
+            request.payload.limit,
+          ))
+        } catch (error: unknown) {
+          return err(request, {
+            code: 'workspace-git-unavailable',
+            message: `workspace Git history is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+            details: { workspaceId: request.payload.workspaceId },
+          })
+        }
       },
     },
 

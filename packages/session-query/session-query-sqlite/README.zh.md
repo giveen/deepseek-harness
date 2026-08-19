@@ -16,6 +16,8 @@
 
 该服务需要 `ctx.sessions`，并动态观察可选的 `ctx.sessionPersistence`。一个串行化状态机比较来源限定的轻量持久化快照修订，仅以不修改日志的方式检查新日志或已更改日志，提取共享语义文档，以事务方式对账变更，然后运行查询。会话查询绝不会调用持久化后端会修复崩溃的 `load()`；检查期间接入的活动所有者无法修改其日志，稳定观察重试使结果优先使用实时来源。TEMP 实时行仍会记录持久化可用性，而持久基库会在该活动所有者脱离后刷新。重复查询以及同一存储未发生变化的重新打开操作不会执行完整持久化日志检查；切换存储，或观察到新增、已更改、已删除或经外部 load 修复的来源时，会在下次稳定观察时对账。来源或事务失败不会提交任何内容，下一次搜索会重试。
 
+派生索引连接在锁竞争时最多等待 `busyTimeoutMs`（默认 `5000` ms），并默认使用 `synchronous=FULL`。`synchronous=NORMAL` 是部署明确选择；该设置只作用于当前连接，不会改变规范会话数据库。SQLite 的 WAL 自动 checkpoint 阈值通过 `walAutocheckpointPages` 显式配置（默认 `1000` 页）；设为 `0` 时由 Host 维护决定 checkpoint 时机。
+
 `openAt: startup` 是默认值：服务激活会导入 `node:sqlite` 并打开句柄；如果索引无效，则会在服务发布前失败。`openAt: first-search` 会将服务以 ACTIVE 状态发布，同时不导入 SQLite 模块也不打开句柄；首批并发搜索共享同一个就绪 promise，在任何搜索前 dispose（资源释放）服务时也不会导入模块或打开句柄。此模式通过把 SQLite 的实验性警告推迟到首次实际搜索，支持需要干净 Node 22 启动输出的组合；它不会抑制届时的警告。无效数据库同样会使首次搜索失败，而不是服务激活失败。`openAt: never` 为该部署关闭全文搜索：`searchSessions` 和 `searchEvents` 在任何请求规范化之前就以 `SESSION_QUERY_SEARCH_DISABLED` 失败，node:sqlite 绝不会被导入或打开，也不运行任何来源观察或对账，而 `ctx.sessionQuery` 上继承的全部精确读取、过滤和跟踪保持可用。
 
 持久化 FTS 行位于专用派生数据库中。连接本地 TEMP 表保存实时行，这些行会遮蔽同一会话的持久化基库，并在实时所有者消失后使其重新可见。卸载持久化会隐藏持久行，但不会丢弃缓存；重新挂载会对账缓存。关闭或重新打开数据库会删除全部实时覆盖层，但保留持久行。
@@ -29,11 +31,18 @@
 | `path` | 必填 | 专用派生索引 SQLite 路径；支持 `:memory:`。在 POSIX 文件系统上，缺失的文件系统路径会以仅所有者可访问的方式创建。 |
 | `openAt` | `startup` | `startup` 会在服务激活完成前打开；`first-search` 把 SQLite 模块与句柄推迟到搜索时再加载和打开；`never` 关闭全文搜索（以类型化的 `SESSION_QUERY_SEARCH_DISABLED` 失败），继承的读取保持可用。 |
 | `journalMode` | `wal` | `wal`、`delete`、`truncate` 或 `persist`。 |
+| `busyTimeoutMs` | `5000` | SQLite 最大锁等待毫秒数；有效范围为 1..120000。 |
+| `synchronous` | `full` | SQLite 连接耐久性级别：`full` 或明确选择的 `normal`。 |
+| `walAutocheckpointPages` | `1000` | WAL 自动 checkpoint 的页数阈值；`0` 关闭自动 checkpoint，最大为 `1000000`。 |
 | `defaultLimit` | `20` | 请求省略 `limit` 时的分页大小；最多为 `Number.MAX_SAFE_INTEGER - 1`。 |
 | `maxLimit` | `100` | 接受的最大请求分页大小；最多为 `Number.MAX_SAFE_INTEGER - 1`。 |
 | `snippetChars` | `240` | 按 Unicode 码点计算的最大 snippet 长度。 |
 | `readWindowMax` | `50` | `before` 或 `after` 的最大原始事件数，用于继承的 `readEvent()`。 |
 | `persistedInspectConcurrency` | `4` | 继承批量读取的最大并发持久化日志检查数；必须是正安全整数。 |
+
+## 诊断与备份
+
+`SqliteSessionQueryEngine.checkIntegrity()` 运行 SQLite 的 `integrity_check` 和 `foreign_key_check` pragma。`backup(destination)` 使用在线备份 API，在源库仍可使用时生成一致的派生索引映像；已有目标文件会被替换。`checkpoint(mode?)` 默认运行串行化的 `PASSIVE` checkpoint，并返回 SQLite 的进度计数。对账通过有界分页读取持久化快照，同时保留稳定的前后观察检查。当 `openAt: 'never'` 关闭 SQLite 索引时，这些 Host 维护 API 不可用。
 
 ## 分词器与限制
 
@@ -53,5 +62,7 @@
 
 - **无调用方授权**：这是上下文范围内的可信服务；模型工具或 UI 必须强制执行自己的访问策略。
 - **同步查询执行**：`DatabaseSync` 在 MATCH 执行期间会阻塞 JavaScript 线程，且无法中断已运行的语句。
+- **锁处理有界**：锁持有时间超过 `busyTimeoutMs` 时搜索失败；服务不会在锁超时后重试过期查询。
 - **Token 召回，而非任意子字符串**：`unicode61` tokenizer 不会匹配更大 token 中的子字符串；对字面扫描使用 `filterEvents()`。
 - **单一所有者的派生索引**：每个索引路径必须仅归一个进程中的一个服务所有；不支持外部写入者和多进程共享。
+- **关闭自动 checkpoint 后由 Host 负责调度**：`walAutocheckpointPages: 0` 不会启动替代计时器；调用方必须在自有维护窗口调用 `checkpoint()`。

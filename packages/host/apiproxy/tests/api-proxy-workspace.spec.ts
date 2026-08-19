@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { execFile as execFileCallback } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
@@ -20,6 +22,7 @@ import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
 import { MemoryStorageBackend } from '../../../storage/storage-domain/tests/helpers/memory-backend.ts'
 
 let nextRpc = 1
+const run = promisify(execFileCallback)
 
 function request<P>(payload: P): RpcRequest<P> {
   return { rpcId: RpcId(`workspace-${String(nextRpc++)}`), payload }
@@ -317,6 +320,66 @@ describe('workspace.create', () => {
     expect(secondResult.workspace.workspaceId).not.toBe(firstResult.workspace.workspaceId)
     expect(expectOk(await api.workspace.list(request({}))).items.map(workspace => workspace.path))
       .toEqual([second, first])
+  })
+})
+
+describe('workspace.files', () => {
+  it('lists a bounded recursive tree and omits repository metadata directories', async () => {
+    const { api, root } = await harness()
+    const project = stageDir(root, 'file-viewer')
+    mkdirSync(join(project, 'src'))
+    mkdirSync(join(project, '.git'))
+    mkdirSync(join(project, 'node_modules'))
+    writeFileSync(join(project, 'README.md'), 'readme')
+    writeFileSync(join(project, 'src', 'index.ts'), 'export {}')
+    writeFileSync(join(project, '.git', 'config'), 'hidden')
+    writeFileSync(join(project, 'node_modules', 'ignored.js'), 'hidden')
+    const workspace = expectOk(await api.workspace.create(request({ path: project }))).workspace
+
+    const page = expectOk(await api.workspace.files(request({ workspaceId: workspace.workspaceId })))
+    expect(page.truncated).toBe(false)
+    expect(page.entries.map(entry => entry.relativePath)).toEqual([
+      'README.md',
+      'src',
+      'src/index.ts',
+    ])
+  })
+})
+
+describe('workspace.commits', () => {
+  it('returns newest-first pages with a commit cursor', async () => {
+    const { api, root } = await harness()
+    const project = stageDir(root, 'git-viewer')
+    await run('git', ['-C', project, 'init', '--quiet'])
+    await run('git', ['-C', project, 'config', 'user.email', 'fixture@example.test'])
+    await run('git', ['-C', project, 'config', 'user.name', 'Fixture'])
+    writeFileSync(join(project, 'one.txt'), 'one')
+    await run('git', ['-C', project, 'add', 'one.txt'])
+    await run('git', ['-C', project, 'commit', '--quiet', '-m', 'First commit'])
+    writeFileSync(join(project, 'two.txt'), 'two')
+    await run('git', ['-C', project, 'add', 'two.txt'])
+    await run('git', ['-C', project, 'commit', '--quiet', '-m', 'Second commit', '-m', 'Full second message'])
+    const workspace = expectOk(await api.workspace.create(request({ path: project }))).workspace
+
+    const first = expectOk(await api.workspace.commits(request({ workspaceId: workspace.workspaceId, limit: 1 })))
+    expect(first.commits).toHaveLength(1)
+    const latest = first.commits[0]
+    expect(latest).toBeDefined()
+    expect(latest?.summary).toBe('Second commit')
+    expect(latest?.message).toContain('Full second message')
+    expect(first.hasMore).toBe(true)
+    const cursor = first.nextBefore
+    if (cursor === undefined) throw new Error('expected a continuation cursor')
+    expect(cursor).toBe(first.commits[0]?.id)
+
+    const second = expectOk(await api.workspace.commits(request({
+      workspaceId: workspace.workspaceId,
+      before: cursor,
+      limit: 1,
+    })))
+    expect(second.commits).toHaveLength(1)
+    expect(second.commits[0]?.summary).toBe('First commit')
+    expect(second.hasMore).toBe(false)
   })
 })
 

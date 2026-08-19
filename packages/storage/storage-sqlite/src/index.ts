@@ -10,10 +10,39 @@ import z from '@deepseek-ai/schemastery'
 import type { DatabaseSync } from 'node:sqlite'
 import { StorageError, UNIT_NAME_RE, storageBackendServiceKey } from '@deepseek-ai/dsh-storage'
 import type { KvFacet, KvUnit, KvUnitDescriptor, StorageBackend } from '@deepseek-ai/dsh-storage'
-import { openDatabase, recordTableName, type JournalMode } from './schema.ts'
+import {
+  openDatabase,
+  recordTableName,
+  type JournalMode,
+  type SynchronousMode,
+  type CheckpointMode,
+  backupDatabase,
+  checkpointDatabase,
+  checkDatabaseIntegrity,
+  DEFAULT_BUSY_TIMEOUT_MS,
+  MAX_BUSY_TIMEOUT_MS,
+  DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
+  MAX_WAL_AUTOCHECKPOINT_PAGES,
+  DEFAULT_SYNCHRONOUS_MODE,
+  type SqliteCheckpointReport,
+  type SqliteIntegrityReport,
+} from './schema.ts'
 import { SqliteKvUnit } from './unit.ts'
 
-export { STORAGE_SQLITE_SCHEMA_VERSION, type JournalMode } from './schema.ts'
+export {
+  STORAGE_SQLITE_SCHEMA_VERSION,
+  checkpointDatabase,
+  DEFAULT_BUSY_TIMEOUT_MS,
+  MAX_BUSY_TIMEOUT_MS,
+  DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
+  MAX_WAL_AUTOCHECKPOINT_PAGES,
+  DEFAULT_SYNCHRONOUS_MODE,
+  type CheckpointMode,
+  type JournalMode,
+  type SynchronousMode,
+  type SqliteCheckpointReport,
+  type SqliteIntegrityReport,
+} from './schema.ts'
 
 /** Cordis plugin name. */
 export const name = 'storage-sqlite'
@@ -39,12 +68,22 @@ export interface Config {
    * {@link JournalMode}.
    */
   journalMode?: JournalMode
+  /** SQLite connection lock wait in milliseconds. */
+  busyTimeoutMs?: number
+  /** SQLite synchronous durability level; `full` is the default. */
+  synchronous?: SynchronousMode
+  /** WAL automatic-checkpoint threshold in pages; zero disables it. */
+  walAutocheckpointPages?: number
 }
 
 /** Schemastery validator for {@link Config}. */
 export const Config: z<Config> = z.object({
   path: z.string().required(),
   journalMode: z.union(['wal', 'delete', 'truncate', 'persist'] as const).default('wal'),
+  busyTimeoutMs: z.number().step(1).min(1).max(MAX_BUSY_TIMEOUT_MS).default(DEFAULT_BUSY_TIMEOUT_MS),
+  synchronous: z.union(['full', 'normal'] as const).default(DEFAULT_SYNCHRONOUS_MODE),
+  walAutocheckpointPages: z.number().step(1).min(0).max(MAX_WAL_AUTOCHECKPOINT_PAGES)
+    .default(DEFAULT_WAL_AUTOCHECKPOINT_PAGES),
 })
 
 /**
@@ -65,7 +104,11 @@ export class SqliteStorageBackend implements StorageBackend {
    * @param config - Validated plugin configuration.
    */
   constructor(config: Config) {
-    this.ready = openDatabase(config.path, (config as Required<Config>).journalMode)
+    this.ready = openDatabase(config.path, (config as Required<Config>).journalMode, {
+      busyTimeoutMs: config.busyTimeoutMs,
+      synchronous: config.synchronous,
+      walAutocheckpointPages: config.walAutocheckpointPages,
+    })
     // Mark the rejection handled: every primitive re-awaits `ready`, so an
     // open failure still surfaces to each caller; this guard only prevents an
     // unhandled-rejection crash when the failure precedes the first use.
@@ -120,6 +163,38 @@ export class SqliteStorageBackend implements StorageBackend {
     return new SqliteKvUnit(db, descriptor, () => {
       this.units.delete(descriptor.name)
     })
+  }
+
+  /**
+   * Check SQLite structural and foreign-key integrity without changing records.
+   * @returns the raw SQLite diagnostic rows and an aggregate status.
+   */
+  async checkIntegrity(): Promise<SqliteIntegrityReport> {
+    const db = await this.ready
+    if (this.closing !== undefined) throw new StorageError('closed', 'sqlite storage backend is closed')
+    return checkDatabaseIntegrity(db)
+  }
+
+  /**
+   * Create a consistent online backup of this database.
+   * @param destination - destination SQLite path; an existing file is replaced.
+   * @returns the number of pages copied by SQLite.
+   */
+  async backup(destination: string): Promise<number> {
+    const db = await this.ready
+    if (this.closing !== undefined) throw new StorageError('closed', 'sqlite storage backend is closed')
+    return backupDatabase(db, destination)
+  }
+
+  /**
+   * Run one serialized WAL checkpoint for operational maintenance.
+   * @param mode - checkpoint strategy; passive is the default non-blocking choice.
+   * @returns SQLite checkpoint progress counters.
+   */
+  async checkpoint(mode: CheckpointMode = 'passive'): Promise<SqliteCheckpointReport> {
+    const db = await this.ready
+    if (this.closing !== undefined) throw new StorageError('closed', 'sqlite storage backend is closed')
+    return checkpointDatabase(db, mode)
   }
 
   /**

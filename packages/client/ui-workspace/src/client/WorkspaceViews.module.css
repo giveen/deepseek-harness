@@ -1,0 +1,184 @@
+.root {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+}
+
+.toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  font-size: 13px;
+}
+
+.count {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 12px 24px;
+}
+
+.fileRow {
+  min-width: 0;
+}
+
+.fileButton {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  padding-top: 4px;
+  padding-right: 8px;
+  padding-bottom: 4px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.fileButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.fileButton svg {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.fileGlyph {
+  display: inline-flex;
+  width: 14px;
+  justify-content: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.size {
+  margin-left: auto;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.status,
+.empty,
+.error,
+.notice {
+  padding: 16px 20px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.error {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.notice {
+  flex: none;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  font-size: 12px;
+}
+
+.commit {
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.commitButton {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  padding: 8px 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.commitButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.commitMarker {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border: 2px solid var(--dsw-alias-state-business-primary);
+  border-radius: 50%;
+}
+
+.commitSummary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commitButton time {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+}
+
+.commitMessage {
+  margin: 0;
+  padding: 0 16px 14px 34px;
+  color: var(--dsw-alias-label-secondary);
+  font-family: var(--ds-font-family-mono);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.moreButton {
+  flex: none;
+  margin: 8px 20px 16px;
+  min-height: 32px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+
+.moreButton:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.moreButton:disabled {
+  cursor: wait;
+  opacity: .6;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

@@ -4,7 +4,7 @@ English | [中文](persistence.zh.md)
 
 The **durability seam** for the event log. [session.md](session.md) describes the in-memory `Session` — the append-only `SessionEvent` log that is the source of truth. This page describes how that log is made durable: the abstract `SessionPersistence` service, its backends, the flush checkpoint, crash recovery, and the metadata header that travels alongside the log. The event vocabulary the log carries is enumerated, member by member, in the generated [persistence log event catalog](../persistence-catalog.md).
 
-The seam is a [capability seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.md): one abstract service ([dsh-session-persistence](../../packages/session/session-persistence), `ctx.sessionPersistence`) defining locate/create/append, reusable Session preparation, logical load/inspect, physical suffix reads, and lightweight list/snapshot observation over the existing `SessionEvent` — **no parallel persisted event type** — and two interchangeable backends implementing the same contract. See the [session-persistence Agent Note](../../.agents/notes/implemented/architecture/2026-06-14-session-persistence.md).
+The seam is a [capability seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.md): one abstract service ([dsh-session-persistence](../../packages/session/session-persistence), `ctx.sessionPersistence`) defining locate/create/append, reusable Session preparation, logical load/inspect, physical suffix reads, lightweight list/snapshot observation, and optional mark-and-sweep retention operations over the existing `SessionEvent` — **no parallel persisted event type** — and two interchangeable backends implementing the same contract. The default retention methods fail explicitly; SQLite owns durable marks and bounded sweeps. See the [session-persistence Agent Note](../../.agents/notes/implemented/architecture/2026-06-14-session-persistence.md).
 
 ## The flush checkpoint
 
@@ -233,7 +233,7 @@ interface SessionPersistenceSnapshot {
 Both implement the same abstract `SessionPersistence` (locate/create/append/prepare/load/inspect/readFrom/list/listSnapshots over `SessionEvent`, with optional cancellation on observation methods) and pass the shared `runPersistenceContract` suite:
 
 - **[dsh-session-persistence-jsonl](../../packages/session/session-persistence-jsonl)** — an append-only logical JSONL log per session, stored as checksummed concatenated Zstandard frames by default or raw lines by configuration, with crash-safe atomic writes, interrupted-turn recovery, and a read/replay path.
-- **[dsh-session-persistence-sqlite](../../packages/session/session-persistence-sqlite)** — `node:sqlite`, one row per `SessionEvent`. The row fields `(session_id, seq, type, time, data, source_event_seqs, surface_op)` map 1:1 onto the event, including optional surface metadata, so there is no parallel persisted schema to keep in sync.
+- **[dsh-session-persistence-sqlite](../../packages/session/session-persistence-sqlite)** — `node:sqlite`, one row per `SessionEvent`. The row fields `(session_id, seq, type, time, data, source_event_seqs, surface_op)` map 1:1 onto the event, including optional surface metadata, so there is no parallel persisted schema to keep in sync. Its connection defaults to `synchronous=FULL` with a 5-second native busy timeout and explicit 1000-page WAL auto-checkpoint threshold, reads seek suffixes in one transaction, exposes host-side integrity, checkpoint, and online-backup diagnostics, supports bounded keyset snapshot pages, and provides explicit mark-and-sweep retention for cold, unreferenced sessions. Attachment and projection cleanup remains separate.
 
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
@@ -377,9 +377,43 @@ abstract list(signal?: AbortSignal): Promise<SessionHeader[]>
  * @returns one header and opaque revision per materialized session without loading full logs.
  */
 abstract listSnapshots(signal?: AbortSignal): Promise<SessionPersistenceSnapshot[]>
+
+/**
+ * Mark materialized sessions for a later deletion sweep. A provider may
+ * reject this capability when it cannot persist marks safely.
+ * @param _ids - sessions to mark; duplicates are reported once in input order.
+ * @param _reason - optional maintenance reason retained with each mark.
+ * @returns the idempotent mark result.
+ */
+async markForDeletion( _ids: readonly SessionId[], _reason?: string, ): Promise<SessionDeletionMarkResult>
+
+/**
+ * List durable deletion marks without loading session logs.
+ * @returns marks in the provider's deterministic maintenance order.
+ */
+async listDeletionMarks(): Promise<SessionDeletionMark[]>
+
+/**
+ * Delete a bounded set of marked sessions after protecting live sessions and
+ * sessions still named by an unmarked child.
+ * @param _limit - maximum number of marks considered in this pass.
+ * @returns the deletion and protection results.
+ */
+async sweepMarked( _limit: number = SESSION_PERSISTENCE_DEFAULT_SWEEP_LIMIT, ): Promise<SessionDeletionSweepResult>
+
+/**
+ * List persistence snapshots in bounded pages. Backends with a native
+ * keyset query may override this; the default preserves the service contract
+ * for third-party backends while keeping the cursor opaque to callers.
+ * @param limit - maximum number of snapshots in the page.
+ * @param cursor - cursor returned by the previous page, if any.
+ * @param signal - optional cancellation for backend listing work.
+ * @returns one bounded snapshot page.
+ */
+async listSnapshotsPage( limit: number = SESSION_PERSISTENCE_DEFAULT_PAGE_LIMIT, cursor?: string, signal?: AbortSignal, ): Promise<SessionPersistenceSnapshotPage>
 ```
 
 Types: [SessionEvent](session.md) · [SessionId](core.md)
 
-Source: [`packages/session/session-persistence/src/index.ts:84`](../../packages/session/session-persistence/src/index.ts)
+Source: [`packages/session/session-persistence/src/index.ts:138`](../../packages/session/session-persistence/src/index.ts)
 <!-- END GENERATED cordis-surface -->

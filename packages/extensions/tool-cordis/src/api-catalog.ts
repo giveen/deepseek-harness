@@ -1080,6 +1080,30 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'signal', description: 'optional cancellation for backend snapshot-listing work.' }],
         returns: 'one header and opaque revision per materialized session without loading full logs.',
       },
+      {
+        signature: 'async markForDeletion( _ids: readonly SessionId[], _reason?: string, ): Promise<SessionDeletionMarkResult>',
+        description: 'Mark materialized sessions for a later deletion sweep. A provider may reject this capability when it cannot persist marks safely.',
+        parameters: [{ name: '_ids', description: 'sessions to mark; duplicates are reported once in input order.' }, { name: '_reason', description: 'optional maintenance reason retained with each mark.' }],
+        returns: 'the idempotent mark result.',
+      },
+      {
+        signature: 'async listDeletionMarks(): Promise<SessionDeletionMark[]>',
+        description: 'List durable deletion marks without loading session logs.',
+        parameters: [],
+        returns: 'marks in the provider\'s deterministic maintenance order.',
+      },
+      {
+        signature: 'async sweepMarked( _limit: number = SESSION_PERSISTENCE_DEFAULT_SWEEP_LIMIT, ): Promise<SessionDeletionSweepResult>',
+        description: 'Delete a bounded set of marked sessions after protecting live sessions and sessions still named by an unmarked child.',
+        parameters: [{ name: '_limit', description: 'maximum number of marks considered in this pass.' }],
+        returns: 'the deletion and protection results.',
+      },
+      {
+        signature: 'async listSnapshotsPage( limit: number = SESSION_PERSISTENCE_DEFAULT_PAGE_LIMIT, cursor?: string, signal?: AbortSignal, ): Promise<SessionPersistenceSnapshotPage>',
+        description: 'List persistence snapshots in bounded pages. Backends with a native keyset query may override this; the default preserves the service contract for third-party backends while keeping the cursor opaque to callers.',
+        parameters: [{ name: 'limit', description: 'maximum number of snapshots in the page.' }, { name: 'cursor', description: 'cursor returned by the previous page, if any.' }, { name: 'signal', description: 'optional cancellation for backend listing work.' }],
+        returns: 'one bounded snapshot page.',
+      },
     ],
   },
   {
@@ -3653,7 +3677,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'RpcErrorDetailsMap',
-    declaration: 'export interface RpcErrorDetailsMap {\n    \'bad-request\': {\n        issues: ZodIssue[];\n    };\n    \'cancelled\': {};\n    \'session-not-found\': {\n        sessionId: SessionId;\n    };\n    \'model-unavailable\': {\n        provider: string;\n        model: string;\n    };\n    \'session-conflict\': {\n        sessionId: SessionId;\n        requestedCwd: string;\n        existingCwd?: string;\n    };\n    \'invalid-time-zone\': {\n        value: string;\n    };\n    \'workspace-attach-failed\': {\n        sessionId: SessionId;\n        workspaceId: string;\n    };\n    \'workspace-not-found\': {\n        workspaceId: string;\n    };\n    \'workspace-invalid-path\': {\n        path: string;\n    };\n    \'workspace-name-conflict\': {\n        name: string;\n    };\n    \'workspace-move-invalid\': {\n        workspaceId: string;\n        sessionId: SessionId;\n        beforeSessionId?: SessionId;\n    };\n    \'directory-unreadable\': {\n        path: string;\n    };\n    \'directory-exists\': {\n        path: string;\n    };\n    \'directory-create-failed\': {\n        path: string;\n    };\n    \'directory-picker-unavailable\': {\n        capability: string;\n    };\n    \'agent-preset-read-only\': {\n        agentPreset: string;\n        reason: string;\n    };\n    \'agent-preset-locked\': {\n        sessionId: SessionId;\n        agentPreset: string;\n    };\n    \'agent-preset-conflict\': {\n        sessionId: SessionId;\n        requestedPreset: string;\n        existingPreset?: string;\n    };\n    \'agent-preset-not-found\': {\n        agentPreset: string;\n      /* …truncated — full shape in source */',
+    declaration: 'export interface RpcErrorDetailsMap {\n    \'bad-request\': {\n        issues: ZodIssue[];\n    };\n    \'cancelled\': {};\n    \'session-not-found\': {\n        sessionId: SessionId;\n    };\n    \'model-unavailable\': {\n        provider: string;\n        model: string;\n    };\n    \'session-conflict\': {\n        sessionId: SessionId;\n        requestedCwd: string;\n        existingCwd?: string;\n    };\n    \'invalid-time-zone\': {\n        value: string;\n    };\n    \'workspace-attach-failed\': {\n        sessionId: SessionId;\n        workspaceId: string;\n    };\n    \'workspace-not-found\': {\n        workspaceId: string;\n    };\n    \'workspace-invalid-path\': {\n        path: string;\n    };\n    \'workspace-name-conflict\': {\n        name: string;\n    };\n    \'workspace-move-invalid\': {\n        workspaceId: string;\n        sessionId: SessionId;\n        beforeSessionId?: SessionId;\n    };\n    \'workspace-files-unavailable\': {\n        workspaceId: string;\n    };\n    \'workspace-git-unavailable\': {\n        workspaceId: string;\n    };\n    \'directory-unreadable\': {\n        path: string;\n    };\n    \'directory-exists\': {\n        path: string;\n    };\n    \'directory-create-failed\': {\n        path: string;\n    };\n    \'directory-picker-unavailable\': {\n        capability: string;\n    };\n    \'agent-preset-read-only\': {\n        agentPreset: string;\n        reason: string;\n    };\n    \'agent-preset-locked\': {\n        sessionId: SessionId;\n        agentPreset: string;\n    };\n    \'agent-preset-conflict\': {\n        sessionId: Sessio /* …truncated — full shape in source */',
   },
   {
     name: 'RpcId',
@@ -3742,6 +3766,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionAvailability',
     declaration: 'export type SessionAvailability = \'live\' | \'persisted\';',
+  },
+  {
+    name: 'SessionDeletionMark',
+    declaration: 'export interface SessionDeletionMark {\n    id: SessionId;\n    markedAt: number;\n    reason?: string;\n}',
+  },
+  {
+    name: 'SessionDeletionMarkResult',
+    declaration: 'export interface SessionDeletionMarkResult {\n    marked: SessionId[];\n    alreadyMarked: SessionId[];\n    missing: SessionId[];\n    skippedLive: SessionId[];\n}',
+  },
+  {
+    name: 'SessionDeletionSweepResult',
+    declaration: 'export interface SessionDeletionSweepResult {\n    deleted: SessionId[];\n    skippedLive: SessionId[];\n    skippedReferenced: SessionId[];\n    remaining: number;\n}',
   },
   {
     name: 'SessionEvent',
@@ -3846,6 +3882,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionPersistenceSnapshot',
     declaration: 'export interface SessionPersistenceSnapshot {\n    header: SessionHeader;\n    revision: SessionPersistenceRevision;\n}',
+  },
+  {
+    name: 'SessionPersistenceSnapshotPage',
+    declaration: 'export interface SessionPersistenceSnapshotPage {\n    snapshots: SessionPersistenceSnapshot[];\n    nextCursor?: string;\n}',
   },
   {
     name: 'SessionPreparation',

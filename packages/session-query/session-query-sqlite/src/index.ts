@@ -36,7 +36,19 @@ import type {
 } from '@deepseek-ai/dsh-session-query'
 import {
   type JournalMode,
+  type SynchronousMode,
+  type CheckpointMode,
   openSearchDatabase,
+  backupDatabase,
+  checkpointDatabase,
+  checkDatabaseIntegrity,
+  DEFAULT_BUSY_TIMEOUT_MS,
+  MAX_BUSY_TIMEOUT_MS,
+  DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
+  MAX_WAL_AUTOCHECKPOINT_PAGES,
+  DEFAULT_SYNCHRONOUS_MODE,
+  type SqliteCheckpointReport,
+  type SqliteIntegrityReport,
 } from './schema.ts'
 import {
   type NormalizedEventRequest,
@@ -59,7 +71,17 @@ import {
 export {
   SESSION_QUERY_SQLITE_APPLICATION_ID,
   SESSION_QUERY_SQLITE_SCHEMA_VERSION,
+  checkpointDatabase,
+  DEFAULT_BUSY_TIMEOUT_MS,
+  MAX_BUSY_TIMEOUT_MS,
+  DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
+  MAX_WAL_AUTOCHECKPOINT_PAGES,
+  DEFAULT_SYNCHRONOUS_MODE,
+  type CheckpointMode,
   type JournalMode,
+  type SynchronousMode,
+  type SqliteCheckpointReport,
+  type SqliteIntegrityReport,
 } from './schema.ts'
 
 /** Boot-context slot for a launcher-owned absolute path to this process's derived query index. */
@@ -103,6 +125,12 @@ export interface Config extends SessionQueryConfig {
   openAt?: OpenAt
   /** SQLite journal mode. Defaults to `wal`. */
   journalMode?: JournalMode
+  /** SQLite connection lock wait in milliseconds. */
+  busyTimeoutMs?: number
+  /** SQLite synchronous durability level; `full` is the default. */
+  synchronous?: SynchronousMode
+  /** WAL automatic-checkpoint threshold in pages; zero disables it. */
+  walAutocheckpointPages?: number
   /** Page size when a request omits `limit`. At most `Number.MAX_SAFE_INTEGER - 1`; defaults to 20. */
   defaultLimit?: number
   /** Largest accepted page size. At most `Number.MAX_SAFE_INTEGER - 1`; defaults to 100. */
@@ -117,6 +145,9 @@ interface ResolvedConfig {
   path: string
   openAt: OpenAt
   journalMode: JournalMode
+  busyTimeoutMs: number
+  synchronous: SynchronousMode
+  walAutocheckpointPages: number
   defaultLimit: number
   maxLimit: number
   snippetChars: number
@@ -160,6 +191,16 @@ interface IndexedLiveRow {
   generation: number
 }
 
+interface IndexedDocument {
+  text: string
+  session_id: string
+  seq: number
+  type: string
+  time: number
+  surface: string
+  codepoint_length: number
+}
+
 interface SessionHeaderRow {
   session_id: string
   version: number
@@ -200,6 +241,10 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
     path: z.string().required(),
     openAt: z.union(['startup', 'first-search', 'never'] as const).default('startup'),
     journalMode: z.union(['wal', 'delete', 'truncate', 'persist'] as const).default('wal'),
+    busyTimeoutMs: z.number().step(1).min(1).max(MAX_BUSY_TIMEOUT_MS).default(DEFAULT_BUSY_TIMEOUT_MS),
+    synchronous: z.union(['full', 'normal'] as const).default(DEFAULT_SYNCHRONOUS_MODE),
+    walAutocheckpointPages: z.number().step(1).min(0).max(MAX_WAL_AUTOCHECKPOINT_PAGES)
+      .default(DEFAULT_WAL_AUTOCHECKPOINT_PAGES),
     defaultLimit: z.number().step(1).min(1).max(SQLITE_MAX_PAGE_LIMIT).default(SESSION_QUERY_SQLITE_DEFAULT_LIMIT),
     maxLimit: z.number().step(1).min(1).max(SQLITE_MAX_PAGE_LIMIT).default(SESSION_QUERY_SQLITE_MAX_LIMIT),
     snippetChars: z.number().step(1).min(1).default(SESSION_QUERY_SQLITE_SNIPPET_CHARS),
@@ -312,6 +357,44 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
     })
   }
 
+  /**
+   * Check SQLite structural and foreign-key integrity without changing the index.
+   * @returns the raw SQLite diagnostic rows and an aggregate status.
+   */
+  async checkIntegrity(): Promise<SqliteIntegrityReport> {
+    this._assertSearchEnabled()
+    return this._serialized(undefined, async () => {
+      await this._ensureReady(undefined)
+      return checkDatabaseIntegrity(this._requireDb())
+    })
+  }
+
+  /**
+   * Create a consistent online backup of the derived index.
+   * @param destination - destination SQLite path; an existing file is replaced.
+   * @returns the number of pages copied by SQLite.
+   */
+  async backup(destination: string): Promise<number> {
+    this._assertSearchEnabled()
+    return this._serialized(undefined, async () => {
+      await this._ensureReady(undefined)
+      return backupDatabase(this._requireDb(), destination)
+    })
+  }
+
+  /**
+   * Run one serialized WAL checkpoint for operational maintenance.
+   * @param mode - checkpoint strategy; passive is the default non-blocking choice.
+   * @returns SQLite checkpoint progress counters.
+   */
+  async checkpoint(mode: CheckpointMode = 'passive'): Promise<SqliteCheckpointReport> {
+    this._assertSearchEnabled()
+    return this._serialized(undefined, async () => {
+      await this._ensureReady(undefined)
+      return checkpointDatabase(this._requireDb(), mode)
+    })
+  }
+
   /** Close the database after every accepted operation reaches quiescence. */
   close(): Promise<void> {
     this._closePromise ??= this._close()
@@ -346,7 +429,11 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
   }
 
   private async _open(): Promise<void> {
-    this._db = await openSearchDatabase(this.config.path, this.config.journalMode)
+    this._db = await openSearchDatabase(this.config.path, this.config.journalMode, {
+      busyTimeoutMs: this.config.busyTimeoutMs,
+      synchronous: this.config.synchronous,
+      walAutocheckpointPages: this.config.walAutocheckpointPages,
+    })
     const state = this._db.prepare(
       'SELECT global_generation FROM search_state WHERE singleton = 1',
     ).get() as { global_generation: number }
@@ -494,7 +581,7 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
         try {
           const canReuseIndexed = this._lastPersistenceIdentity === undefined
             || this._lastPersistenceIdentity === persistenceBinding.identity
-          const before = await persistence.listSnapshots(signal)
+          const before = await listPersistenceSnapshots(persistence, signal)
           assertNotAborted(signal)
           persisted = materializePersistenceSnapshots(before)
           for (const entry of persisted.values()) {
@@ -511,7 +598,7 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
             entry.loaded = observeSession(loaded.meta, loaded.events)
           }
           assertNotAborted(signal)
-          const afterSnapshots = await persistence.listSnapshots(signal)
+          const afterSnapshots = await listPersistenceSnapshots(persistence, signal)
           assertNotAborted(signal)
           const after = materializePersistenceSnapshots(afterSnapshots)
           if (!samePersistenceSnapshots(persisted, after)) continue
@@ -570,6 +657,12 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
     revision: SessionPersistenceRevision,
     generation: number,
   ): void {
+    const existing = this._indexedDocuments('persisted_docs', entry.header.id)
+    if (existing.length > 0 && documentsHavePrefix(existing, entry.documents)) {
+      this._updatePersistedSession(entry, revision, generation)
+      insertDocuments(this._requireDb(), 'persisted_docs', entry.documents, existing.length)
+      return
+    }
     this._deleteSession('persisted', entry.header.id)
     const db = this._requireDb()
     db.prepare(`
@@ -581,25 +674,41 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
       revision,
       generation,
     )
-    const insert = db.prepare(`
-      INSERT INTO persisted_docs (text, session_id, seq, type, time, surface, codepoint_length)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `)
-    for (const document of entry.documents) {
-      const text = sanitizeFtsText(document.text)
-      insert.run(
-        text,
-        document.sessionId,
-        document.seq,
-        document.type,
-        document.time,
-        document.surface,
-        Array.from(text).length,
-      )
-    }
+    insertDocuments(db, 'persisted_docs', entry.documents, 0)
+  }
+
+  private _updatePersistedSession(
+    entry: ObservedSession,
+    revision: SessionPersistenceRevision,
+    generation: number,
+  ): void {
+    this._requireDb().prepare(`
+      UPDATE persisted_sessions SET
+        version = ?, created_at = ?, cwd = ?, parent_session = ?, seed_length = ?,
+        delegation_depth = ?, agent_preset = ?, revision = ?, generation = ?
+      WHERE id = ?
+    `).run(...headerBindings(entry.header).slice(1), revision, generation, entry.header.id)
   }
 
   private _replaceLiveSession(entry: ObservedSession, generation: number, persisted: boolean): void {
+    const existing = this._indexedDocuments('temp.live_docs', entry.header.id)
+    if (existing.length > 0 && documentsHavePrefix(existing, entry.documents)) {
+      const db = this._requireDb()
+      db.prepare(`
+        UPDATE temp.live_sessions SET
+          version = ?, created_at = ?, cwd = ?, parent_session = ?, seed_length = ?,
+          delegation_depth = ?, agent_preset = ?, fingerprint = ?, persisted = ?, generation = ?
+        WHERE id = ?
+      `).run(
+        ...headerBindings(entry.header).slice(1),
+        entry.fingerprint,
+        persisted ? 1 : 0,
+        generation,
+        entry.header.id,
+      )
+      insertDocuments(db, 'temp.live_docs', entry.documents, existing.length)
+      return
+    }
     this._deleteSession('live', entry.header.id)
     const db = this._requireDb()
     db.prepare(`
@@ -612,22 +721,16 @@ export class SqliteSessionQueryEngine extends SessionQueryEngine {
       persisted ? 1 : 0,
       generation,
     )
-    const insert = db.prepare(`
-      INSERT INTO temp.live_docs (text, session_id, seq, type, time, surface, codepoint_length)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `)
-    for (const document of entry.documents) {
-      const text = sanitizeFtsText(document.text)
-      insert.run(
-        text,
-        document.sessionId,
-        document.seq,
-        document.type,
-        document.time,
-        document.surface,
-        Array.from(text).length,
-      )
-    }
+    insertDocuments(db, 'temp.live_docs', entry.documents, 0)
+  }
+
+  private _indexedDocuments(table: 'persisted_docs' | 'temp.live_docs', id: string): IndexedDocument[] {
+    return this._requireDb().prepare(`
+      SELECT text, session_id, seq, type, time, surface, codepoint_length
+      FROM ${table}
+      WHERE session_id = ?
+      ORDER BY seq
+    `).all(id) as unknown as IndexedDocument[]
   }
 
   private _querySessions(
@@ -779,6 +882,46 @@ function headerBindings(header: SessionHeader): (string | number | null)[] {
   ]
 }
 
+function documentsHavePrefix(existing: readonly IndexedDocument[], documents: readonly SessionEventSearchDocument[]): boolean {
+  if (existing.length > documents.length) return false
+  return existing.every((indexed, index) => {
+    const document = documents[index]
+    if (document === undefined) return false
+    const text = sanitizeFtsText(document.text)
+    return indexed.text === text
+      && indexed.session_id === document.sessionId
+      && indexed.seq === document.seq
+      && indexed.type === document.type
+      && indexed.time === document.time
+      && indexed.surface === document.surface
+      && indexed.codepoint_length === Array.from(text).length
+  })
+}
+
+function insertDocuments(
+  db: DatabaseSync,
+  table: 'persisted_docs' | 'temp.live_docs',
+  documents: readonly SessionEventSearchDocument[],
+  start: number,
+): void {
+  const insert = db.prepare(`
+    INSERT INTO ${table} (text, session_id, seq, type, time, surface, codepoint_length)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const document of documents.slice(start)) {
+    const text = sanitizeFtsText(document.text)
+    insert.run(
+      text,
+      document.sessionId,
+      document.seq,
+      document.type,
+      document.time,
+      document.surface,
+      Array.from(text).length,
+    )
+  }
+}
+
 function selectedDocumentsSql(): { sql: string } {
   return {
     sql: `WITH candidates AS (
@@ -867,6 +1010,20 @@ function observeSession(header: SessionHeader, events: readonly SessionEvent[]):
       .update(JSON.stringify({ header: detachedHeader, events: detachedEvents }))
       .digest('base64url'),
   }
+}
+
+async function listPersistenceSnapshots(
+  persistence: SessionPersistence,
+  signal: AbortSignal | undefined,
+): Promise<SessionPersistenceSnapshot[]> {
+  const snapshots: SessionPersistenceSnapshot[] = []
+  let cursor: string | undefined
+  do {
+    const page = await persistence.listSnapshotsPage(undefined, cursor, signal)
+    snapshots.push(...page.snapshots)
+    cursor = page.nextCursor
+  } while (cursor !== undefined)
+  return snapshots
 }
 
 function materializePersistenceSnapshots(
@@ -1002,6 +1159,9 @@ function resolveConfig(config: Config): ResolvedConfig {
     path: config.path,
     openAt: config.openAt ?? 'startup',
     journalMode: config.journalMode ?? 'wal',
+    busyTimeoutMs: config.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS,
+    synchronous: config.synchronous ?? DEFAULT_SYNCHRONOUS_MODE,
+    walAutocheckpointPages: config.walAutocheckpointPages ?? DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
     defaultLimit: config.defaultLimit ?? SESSION_QUERY_SQLITE_DEFAULT_LIMIT,
     maxLimit: config.maxLimit ?? SESSION_QUERY_SQLITE_MAX_LIMIT,
     snippetChars: config.snippetChars ?? SESSION_QUERY_SQLITE_SNIPPET_CHARS,
@@ -1031,6 +1191,24 @@ function resolveConfig(config: Config): ResolvedConfig {
   }
   const journalModes: readonly string[] = ['wal', 'delete', 'truncate', 'persist']
   if (!journalModes.includes(resolved.journalMode)) throw invalidConfig('journalMode is not supported')
+  if (
+    !Number.isSafeInteger(resolved.busyTimeoutMs)
+    || resolved.busyTimeoutMs < 1
+    || resolved.busyTimeoutMs > MAX_BUSY_TIMEOUT_MS
+  ) {
+    throw invalidConfig(`busyTimeoutMs must be an integer between 1 and ${MAX_BUSY_TIMEOUT_MS}`)
+  }
+  if (
+    !Number.isSafeInteger(resolved.walAutocheckpointPages)
+    || resolved.walAutocheckpointPages < 0
+    || resolved.walAutocheckpointPages > MAX_WAL_AUTOCHECKPOINT_PAGES
+  ) {
+    throw invalidConfig(`walAutocheckpointPages must be an integer between 0 and ${MAX_WAL_AUTOCHECKPOINT_PAGES}`)
+  }
+  const synchronousValue = resolved.synchronous as string
+  if (synchronousValue !== 'full' && synchronousValue !== 'normal') {
+    throw invalidConfig('synchronous must be "full" or "normal"')
+  }
   return resolved
 }
 

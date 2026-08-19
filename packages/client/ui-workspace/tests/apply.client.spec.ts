@@ -36,6 +36,7 @@ async function bench() {
     create, startSession, rename, insertSessionBefore,
   } as never)
   ctx.provide('sessions', { open, clear, search, searchResultLimit: 20, binding, fork } as never)
+  ctx.provide('connection', { api: { workspace: { files: vi.fn(), commits: vi.fn() } }, isLoopback: true } as never)
   const locale = new LocaleRuntime(ctx)
   ctx.provide('locale', locale)
   return {
@@ -54,7 +55,7 @@ function declare(slots: SlotRegistry, ...names: HoleName[]): () => void {
 
 describe('ui-workspace apply', () => {
   it('declares the services it drives', () => {
-    expect(inject).toEqual(['slots', 'sessions', 'workspaces', 'locale'])
+    expect(inject).toEqual(['connection', 'slots', 'sessions', 'workspaces', 'locale'])
   })
 
   it('registers browser and pickers for declarations arriving before or after apply', async () => {

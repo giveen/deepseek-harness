@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import Storage, { storageBackendServiceKey } from '@deepseek-ai/dsh-storage'
 import type { KvUnitDescriptor } from '@deepseek-ai/dsh-storage'
@@ -70,6 +70,51 @@ describe('sqlite backend specifics', () => {
     } finally {
       db.close()
     }
+  })
+
+  it('uses FULL synchronous durability and a bounded lock timeout by default', async () => {
+    const path = await freshDbPath()
+    const backend = backendAt(path)
+    await backend.kv.open(DESCRIPTOR)
+    const db = new DatabaseSync(path)
+    expect((db.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous).toBe(2)
+    expect((db.prepare('PRAGMA wal_autocheckpoint').get() as { wal_autocheckpoint: number }).wal_autocheckpoint).toBe(1_000)
+    expect(StorageSqlite.checkpointDatabase(db)).toMatchObject({ mode: 'passive', busy: 0 })
+    db.close()
+    await backend.close()
+
+    const configured = new SqliteStorageBackend(new Config({
+      path,
+      synchronous: 'normal',
+      busyTimeoutMs: 1_234,
+      walAutocheckpointPages: 321,
+    }))
+    await configured.kv.open(DESCRIPTOR)
+    const probe = await (configured as unknown as { ready: Promise<DatabaseSync> }).ready
+    expect((probe.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous).toBe(1)
+    expect((probe.prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout).toBe(1_234)
+    expect((probe.prepare('PRAGMA wal_autocheckpoint').get() as { wal_autocheckpoint: number }).wal_autocheckpoint).toBe(321)
+    await expect(configured.checkpoint()).resolves.toMatchObject({ mode: 'passive', busy: 0 })
+    await configured.close()
+  })
+
+  it('runs integrity diagnostics and creates an online backup', async () => {
+    const path = await freshDbPath()
+    const backend = backendAt(path)
+    const unit = await backend.kv.open(DESCRIPTOR)
+    await unit.putRecord('records', 'k', { n: 1 })
+    await expect(backend.checkIntegrity()).resolves.toMatchObject({
+      ok: true,
+      integrityCheck: ['ok'],
+      foreignKeyViolations: [],
+    })
+    const destination = join(dirname(path), 'backup.db')
+    await expect(backend.backup(destination)).resolves.toBeGreaterThan(0)
+    const copy = new DatabaseSync(destination)
+    expect(copy.prepare('SELECT value FROM u_specimen_records WHERE key = ?').get('k'))
+      .toEqual({ value: JSON.stringify({ n: 1 }) })
+    copy.close()
+    await backend.close()
   })
 
   it('rejects a mismatched database schema version', async () => {

@@ -8,14 +8,19 @@
  * client half (see the contract module doc). Export discipline:
  * packages/client/AGENTS.md.
  */
+import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+// Type-only: pulls the conversation view-slot declaration into this plugin's
+// compilation face; the view entries are additive tabs, not a conversation replacement.
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { WorkspaceBrowserInjected, WorkspacePickerInjected } from './contract/slots.ts'
 import { createWorkspaceViewStore } from './stores.ts'
 import { WorkspaceBrowser } from './WorkspaceBrowser.tsx'
 import { WorkspacePicker } from './WorkspacePicker.tsx'
+import { WorkspaceCommitsView, WorkspaceFilesView } from './WorkspaceViews.tsx'
 import { en, zh, type WorkspaceKey } from './locales.ts'
 
 export type {
@@ -23,6 +28,7 @@ export type {
   WorkspaceBrowserInjected, WorkspaceBrowserProps, WorkspacePickerInjected, WorkspacePickerProps,
 } from './contract/slots.ts'
 export type { WorkspaceKey } from './locales.ts'
+export type { WorkspaceCommitsInjected, WorkspaceFilesInjected } from './WorkspaceViews.tsx'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -42,7 +48,7 @@ const NS = 'workspace'
  * provides a waitable service. apply therefore depends on each slot
  * declaration through `slots.inject()` instead of assuming order.
  */
-export const inject = ['slots', 'sessions', 'workspaces', 'locale']
+export const inject = ['connection', 'slots', 'sessions', 'workspaces', 'locale']
 
 /**
  * Register the browser and picker once their slot declarations are on the
@@ -51,6 +57,7 @@ export const inject = ['slots', 'sessions', 'workspaces', 'locale']
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
+  const connection = ctx.get('connection') as ConnectionHandle
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-workspace: dictionaries')
 
   const searchSessions: WorkspaceBrowserInjected['searchSessions'] = async (query, signal) => {
@@ -126,4 +133,52 @@ export function apply(ctx: ClientContext): void {
     },
     WorkspacePicker,
   ))
+
+  // Conversation owns the tab ring; Workspace contributes additive entries
+  // through its declaration lifetime so the tabs disappear cleanly when this
+  // plugin unloads and return if the owner is restored by HMR.
+  const viewInjected = (_sessionId: SessionId) => ({
+    loadFiles: async (workspaceId: Parameters<ConnectionHandle['api']['workspace']['files']>[0]['workspaceId'], signal: AbortSignal) => {
+      const response = await connection.api.workspace.files({ workspaceId }, signal)
+      if (!response.result.ok) throw new Error(response.result.error.message)
+      return response.result.value
+    },
+    openPath: (path: string) => {
+      void ctx.workspaces.openPath(path).catch(() => {
+        // The Host/native opener owns its platform-specific failure surface.
+      })
+    },
+  })
+  const commitsInjected = (_sessionId: SessionId) => ({
+    loadCommits: async (
+      workspaceId: Parameters<ConnectionHandle['api']['workspace']['commits']>[0]['workspaceId'],
+      before: Parameters<ConnectionHandle['api']['workspace']['commits']>[0]['before'],
+      signal: AbortSignal,
+    ) => {
+      const response = await connection.api.workspace.commits({
+        workspaceId,
+        ...before === undefined ? {} : { before },
+      }, signal)
+      if (!response.result.ok) throw new Error(response.result.error.message)
+      return response.result.value
+    },
+  })
+  ctx.slots.inject('conversation.view', function* () {
+    yield ctx.slots.register({
+      name: 'conversation.view',
+      id: 'workspace-files',
+      order: 20,
+      locale: NS,
+      inject: viewInjected,
+      label: () => ctx.locale.bind(NS)('viewer.files.tab'),
+    }, WorkspaceFilesView)
+    yield ctx.slots.register({
+      name: 'conversation.view',
+      id: 'workspace-commits',
+      order: 30,
+      locale: NS,
+      inject: commitsInjected,
+      label: () => ctx.locale.bind(NS)('viewer.commits.tab'),
+    }, WorkspaceCommitsView)
+  })
 }

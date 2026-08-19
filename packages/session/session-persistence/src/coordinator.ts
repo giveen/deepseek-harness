@@ -710,6 +710,18 @@ export class PersistenceCoordinator<TornMarker = unknown> {
   }
 
   /**
+   * Forget coordinator state after the backend has durably deleted a cold session.
+   * @param id - deleted session identity.
+   */
+  forgetDeleted(id: SessionId): void {
+    if (this.ctx.sessions.get(id) !== undefined) {
+      throw new Error(`cannot forget deleted session "${id}" while it is live`)
+    }
+    this.preparations.invalidate(id)
+    this.states.delete(id)
+  }
+
+  /**
    * Prepare and reserve the exact unpublished Session used by resume.
    * Revision retries converge once the durable log remains unchanged for one
    * read/check round trip; continuous external writers may delay completion.
